@@ -3,7 +3,11 @@ import { getDashboardData } from "../lib/data";
 
 export const dynamic = "force-dynamic";
 
-type SearchParams = Promise<{ range?: string }> | { range?: string };
+type SearchParams = Promise<{ range?: string; from?: string; to?: string }> | {
+  range?: string;
+  from?: string;
+  to?: string;
+};
 type DailyRow = Record<string, any>;
 
 const RANGE_OPTIONS = [
@@ -18,6 +22,17 @@ function formatNumber(value: unknown, suffix = "") {
     return "n/a";
   }
   return `${new Intl.NumberFormat("de-DE", { maximumFractionDigits: 1 }).format(value)}${suffix}`;
+}
+
+function formatDate(value: unknown) {
+  if (typeof value !== "string" || !value) {
+    return "n/a";
+  }
+  const date = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return new Intl.DateTimeFormat("de-DE", { dateStyle: "medium" }).format(date);
 }
 
 function formatDateTime(value: unknown) {
@@ -44,6 +59,16 @@ function average(rows: DailyRow[], key: string) {
   return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
+function sum(rows: DailyRow[], key: string) {
+  const values = rows
+    .map((row) => row[key])
+    .filter((value) => typeof value === "number" && !Number.isNaN(value));
+  if (values.length === 0) {
+    return null;
+  }
+  return values.reduce((total, value) => total + value, 0);
+}
+
 function latestNumber(rows: DailyRow[], key: string) {
   for (const row of [...rows].reverse()) {
     const value = row[key];
@@ -54,32 +79,48 @@ function latestNumber(rows: DailyRow[], key: string) {
   return null;
 }
 
-function firstNumber(rows: DailyRow[], key: string) {
-  for (const row of rows) {
-    const value = row[key];
-    if (typeof value === "number" && !Number.isNaN(value)) {
-      return value;
-    }
-  }
-  return null;
+function numbersInOrder(rows: DailyRow[], key: string) {
+  return rows
+    .map((row) => row[key])
+    .filter((value) => typeof value === "number" && !Number.isNaN(value));
 }
 
 function trainingDays(rows: DailyRow[]) {
-  return rows.reduce((sum, row) => sum + (row.training ? 1 : 0), 0);
+  return rows.reduce((total, row) => total + (row.training ? 1 : 0), 0);
 }
 
 function normalizeRange(value: unknown) {
   return value === "14" || value === "30" || value === "all" ? value : "7";
 }
 
-function selectRows(series: DailyRow[], range: string) {
+function isIsoDate(value: unknown) {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+function selectRows(series: DailyRow[], range: string, from?: string, to?: string) {
   if (!Array.isArray(series) || series.length === 0) {
     return [];
+  }
+  if (isIsoDate(from) || isIsoDate(to)) {
+    return series.filter((row) => {
+      const date = row.date;
+      return (!isIsoDate(from) || date >= from) && (!isIsoDate(to) || date <= to);
+    });
   }
   if (range === "all") {
     return series;
   }
   return series.slice(-Number(range));
+}
+
+function sourceLabel(report: Record<string, any>) {
+  if (report.source === "openai") {
+    return report.model ? `OpenAI (${report.model})` : "OpenAI";
+  }
+  if (report.source === "local_rules") {
+    return "Lokale Regeln";
+  }
+  return "n/a";
 }
 
 function MetricCard({
@@ -103,70 +144,126 @@ function MetricCard({
 export default async function Home({ searchParams }: { searchParams?: SearchParams }) {
   const params = await Promise.resolve(searchParams ?? {});
   const range = normalizeRange(params.range);
+  const customRangeActive = isIsoDate(params.from) || isIsoDate(params.to);
   const { metrics, report } = await getDashboardData();
   const risks = Array.isArray(report.risk_flags) ? report.risk_flags : [];
   const series = Array.isArray(metrics.series) ? metrics.series : [];
-  const selectedRows = selectRows(series, range);
-  const selectedLabel = RANGE_OPTIONS.find((option) => option.value === range)?.label ?? "7 Tage";
+  const selectedRows = selectRows(series, range, params.from, params.to);
+  const selectedLabel = customRangeActive
+    ? "Benutzerdefiniert"
+    : RANGE_OPTIONS.find((option) => option.value === range)?.label ?? "7 Tage";
 
-  const currentWeight = latestNumber(series, "weight") ?? metrics.weight?.current;
-  const firstWeightInRange = firstNumber(selectedRows, "weight");
-  const latestWeightInRange = latestNumber(selectedRows, "weight");
+  const weightInRange = latestNumber(selectedRows, "weight");
+  const currentWeight = weightInRange ?? latestNumber(series, "weight") ?? metrics.weight?.current;
+  const weightValues = numbersInOrder(selectedRows, "weight");
   const weightChange =
-    typeof firstWeightInRange === "number" && typeof latestWeightInRange === "number"
-      ? latestWeightInRange - firstWeightInRange
-      : metrics.weight?.change;
+    weightValues.length >= 2 ? weightValues[weightValues.length - 1] - weightValues[0] : null;
 
-  const periodStart = selectedRows[0]?.date ?? metrics.period?.start ?? "n/a";
-  const periodEnd = selectedRows[selectedRows.length - 1]?.date ?? metrics.period?.end ?? "n/a";
-  const lastUpdated = report.created_at ?? metrics.generated_at;
+  const bodyFatInRange = latestNumber(selectedRows, "body_fat_percent");
+  const bodyFat = bodyFatInRange ?? latestNumber(series, "body_fat_percent");
+
+  const periodStart = selectedRows[0]?.date ?? (isIsoDate(params.from) ? params.from : metrics.period?.start) ?? "n/a";
+  const periodEnd =
+    selectedRows[selectedRows.length - 1]?.date ?? (isIsoDate(params.to) ? params.to : metrics.period?.end) ?? "n/a";
+  const lastUpdated = metrics.generated_at ?? report.created_at;
 
   return (
     <main className="shell">
       <header className="topbar">
         <div>
           <p className="eyebrow">Lokales Dashboard</p>
-          <h1>Fitness & Ernaehrung</h1>
+          <h1>Fitness & Ernährung</h1>
         </div>
         <div className="period">
           <span>Zeitraum</span>
           <strong>
-            {periodStart} bis {periodEnd}
+            {formatDate(periodStart)} bis {formatDate(periodEnd)}
           </strong>
           <small>{selectedLabel}</small>
           <small>Letzte Aktualisierung: {formatDateTime(lastUpdated)}</small>
         </div>
       </header>
 
-      <nav className="range-nav" aria-label="Zeitraum">
-        {RANGE_OPTIONS.map((option) => (
-          <Link
-            className={option.value === range ? "active" : ""}
-            href={`/?range=${option.value}`}
-            key={option.value}
-          >
-            {option.label}
-          </Link>
-        ))}
-      </nav>
+      <section className="controls" aria-label="Zeitraumauswahl">
+        <nav className="range-nav" aria-label="Schnellauswahl">
+          {RANGE_OPTIONS.map((option) => (
+            <Link
+              className={!customRangeActive && option.value === range ? "active" : ""}
+              href={`/?range=${option.value}`}
+              key={option.value}
+            >
+              {option.label}
+            </Link>
+          ))}
+        </nav>
+
+        <form className="date-form" action="/" method="get">
+          <label>
+            Von
+            <input name="from" type="date" defaultValue={isIsoDate(params.from) ? params.from : ""} />
+          </label>
+          <label>
+            Bis
+            <input name="to" type="date" defaultValue={isIsoDate(params.to) ? params.to : ""} />
+          </label>
+          <button type="submit">Anwenden</button>
+        </form>
+      </section>
 
       <section className="metrics-grid" aria-label="Kennzahlen">
-        <MetricCard label="Gewicht aktuell" value={formatNumber(currentWeight, " kg")} />
-        <MetricCard label="Gewichtsveraenderung" value={formatNumber(weightChange, " kg")} />
-        <MetricCard label="Kalorien Ø" value={formatNumber(average(selectedRows, "calories"), " kcal")} />
-        <MetricCard label="Protein Ø" value={formatNumber(average(selectedRows, "protein"), " g")} />
-        <MetricCard label="Schritte Ø" value={formatNumber(average(selectedRows, "steps"))} />
+        <MetricCard
+          label="Gewicht aktuell"
+          value={formatNumber(currentWeight, " kg")}
+          hint={weightInRange === null && currentWeight !== null ? "letzter verfügbarer Wert" : undefined}
+        />
+        <MetricCard
+          label="Gewichtsveränderung"
+          value={formatNumber(weightChange, " kg")}
+          hint="im ausgewählten Zeitraum"
+        />
+        <MetricCard
+          label="Kalorien Ø"
+          value={formatNumber(average(selectedRows, "calories"), " kcal")}
+          hint="tägliche Aufnahme aus Yazio"
+        />
+        <MetricCard
+          label="Protein Ø"
+          value={formatNumber(average(selectedRows, "protein"), " g")}
+          hint="tägliche Zufuhr aus Yazio"
+        />
+        <MetricCard
+          label="Schritte Ø"
+          value={formatNumber(average(selectedRows, "steps"))}
+          hint="pro Tag im Zeitraum"
+        />
         <MetricCard label="Trainingstage" value={formatNumber(trainingDays(selectedRows))} />
-        <MetricCard label="Distanz Ø" value={formatNumber(average(selectedRows, "distance_km"), " km")} />
-        <MetricCard label="Aktive kcal Ø" value={formatNumber(average(selectedRows, "active_kcal"), " kcal")} />
-        <MetricCard label="Schlaf Ø" value={formatNumber(average(selectedRows, "sleep_hours"), " h")} />
-        <MetricCard label="Koerperfett aktuell" value={formatNumber(latestNumber(series, "body_fat_percent"), " %")} />
+        <MetricCard
+          label="Distanz gesamt"
+          value={formatNumber(sum(selectedRows, "distance_km"), " km")}
+          hint="im ausgewählten Zeitraum"
+        />
+        <MetricCard
+          label="Aktive kcal Ø/Tag"
+          value={formatNumber(average(selectedRows, "active_kcal"), " kcal")}
+          hint="Zusätzliche Aktivitätskalorien aus Health Connect, nicht Grundumsatz."
+        />
+        <MetricCard
+          label="Schlaf Ø"
+          value={formatNumber(average(selectedRows, "sleep_hours"), " h")}
+          hint="pro Nacht im Zeitraum"
+        />
+        <MetricCard
+          label="Körperfett aktuell"
+          value={formatNumber(bodyFat, " %")}
+          hint={bodyFatInRange === null && bodyFat !== null ? "letzter verfügbarer Wert" : undefined}
+        />
       </section>
 
       <section className="report-grid">
         <article className="panel wide">
           <span>Aktuelle Zusammenfassung</span>
           <p>{report.summary ?? "Noch keine Zusammenfassung vorhanden."}</p>
+          <p className="source-line">Quelle der Auswertung: {sourceLabel(report)}</p>
         </article>
         <article className="panel">
           <span>Empfehlung</span>
@@ -177,7 +274,7 @@ export default async function Home({ searchParams }: { searchParams?: SearchPara
           <p>{report.focus_today ?? "Daten aktualisieren."}</p>
         </article>
         <article className="panel wide">
-          <span>Risiken / Auffaelligkeiten</span>
+          <span>Risiken / Auffälligkeiten</span>
           {risks.length > 0 ? (
             <ul>
               {risks.map((risk, index) => (
@@ -185,7 +282,7 @@ export default async function Home({ searchParams }: { searchParams?: SearchPara
               ))}
             </ul>
           ) : (
-            <p>Keine Auffaelligkeiten gemeldet.</p>
+            <p>Keine Auffälligkeiten gemeldet.</p>
           )}
         </article>
       </section>

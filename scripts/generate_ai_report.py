@@ -165,7 +165,7 @@ def save_report(report, metrics):
     payload = {
         **report,
         "created_at": now,
-        "source": "openai" if os.getenv("OPENAI_API_KEY") else "local_rules",
+        "source": report.get("source", "local_rules"),
     }
     REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
     REPORT_PATH.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -197,17 +197,22 @@ def save_report(report, metrics):
 def main():
     metrics = load_metrics()
     api_key = os.getenv("OPENAI_API_KEY")
+    model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 
     if api_key:
         try:
             report = call_openai(metrics, api_key)
+            report["source"] = "openai"
+            report["model"] = model
             print("AI-Report ueber OpenAI Responses API erzeugt.")
         except (urllib.error.URLError, urllib.error.HTTPError, RuntimeError, json.JSONDecodeError) as exc:
             print(f"OpenAI-Aufruf fehlgeschlagen, nutze lokale Regeln: {exc}")
             report = fallback_report(metrics)
+            report["source"] = "local_rules"
     else:
         print("OPENAI_API_KEY nicht gesetzt, nutze lokale Regeln.")
         report = fallback_report(metrics)
+        report["source"] = "local_rules"
 
     save_report(report, metrics)
     print(f"AI-Report geschrieben: {REPORT_PATH}")

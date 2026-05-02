@@ -80,11 +80,18 @@ h1 {
   margin-top: 6px;
 }
 
+.controls {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 18px;
+  margin: 0 0 18px;
+}
+
 .range-nav {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin: 0 0 18px;
 }
 
 .range-nav a {
@@ -100,6 +107,38 @@ h1 {
 .range-nav a.active {
   border-color: rgba(88, 214, 141, 0.72);
   color: var(--accent);
+}
+
+.date-form {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.date-form label {
+  color: var(--muted);
+  display: grid;
+  font-size: 0.78rem;
+  font-weight: 700;
+  gap: 4px;
+  text-transform: uppercase;
+}
+
+.date-form input,
+.date-form button {
+  background: rgba(24, 27, 32, 0.78);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  font: inherit;
+  min-height: 38px;
+  padding: 8px 10px;
+}
+
+.date-form button {
+  cursor: pointer;
+  font-weight: 700;
 }
 
 .metrics-grid {
@@ -158,6 +197,12 @@ h1 {
 
 .panel p {
   margin: 14px 0 0;
+}
+
+.panel .source-line {
+  color: var(--muted);
+  font-size: 0.95rem;
+  margin-top: 12px;
 }
 
 .panel ul {
