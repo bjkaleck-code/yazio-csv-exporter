@@ -1,4 +1,6 @@
-import { getDashboardData } from "../lib/data";
+﻿import { getDashboardData } from "../lib/data";
+
+export const dynamic = "force-dynamic";
 
 function formatNumber(value: unknown, suffix = "") {
   if (typeof value !== "number" || Number.isNaN(value)) {
@@ -87,3 +89,5 @@ export default async function Home() {
     </main>
   );
 }
+
+
