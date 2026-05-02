@@ -3,10 +3,10 @@ import sqlite3
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[1]
-DB_PATH = ROOT / "db" / "fitness_dashboard.sqlite"
-SCHEMA_PATH = ROOT / "db" / "schema.sql"
-OUTPUT_PATH = ROOT / "data" / "latest_metrics.json"
+REPO_DIR = Path(__file__).resolve().parents[1]
+DB_PATH = REPO_DIR / "db" / "fitness_dashboard.sqlite"
+SCHEMA_PATH = REPO_DIR / "db" / "schema.sql"
+OUTPUT_PATH = REPO_DIR / "data" / "latest_metrics.json"
 OAT_MILK_KCAL_PER_100_ML = 46
 
 
@@ -27,6 +27,14 @@ def connect_db():
     with open(SCHEMA_PATH, "r", encoding="utf-8") as schema_file:
         con.executescript(schema_file.read())
     return con
+
+
+def table_exists(con, table_name):
+    row = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
 
 
 def fetch_rows(con, table):
@@ -55,8 +63,13 @@ def main():
     with connect_db() as con:
         nutrition = fetch_rows(con, "daily_nutrition")
         body = fetch_rows(con, "body_metrics")
+        health = fetch_rows(con, "health_daily") if table_exists(con, "health_daily") else []
 
-    all_dates = sorted({row["date"] for row in nutrition} | {row["date"] for row in body})
+    all_dates = sorted(
+        {row["date"] for row in nutrition}
+        | {row["date"] for row in body}
+        | {row["date"] for row in health}
+    )
     if not all_dates:
         metrics = {
             "status": "empty",
@@ -78,6 +91,7 @@ def main():
     latest_nutrition_7 = latest_window(nutrition, 7)
     latest_nutrition_14 = latest_window(nutrition, 14)
     latest_nutrition_30 = latest_window(nutrition, 30)
+    latest_health_7 = latest_window(health, 7)
 
     avg_protein = avg([row["protein"] for row in latest_nutrition_30])
     protein_per_kg = (
@@ -133,6 +147,13 @@ def main():
             "ml_7_days": coffee_oat_milk_ml_7,
             "calories_7_days": oat_milk_calories_7,
             "kcal_per_100_ml": OAT_MILK_KCAL_PER_100_ML,
+        },
+        "health": {
+            "active_kcal_avg_7d": avg([row["active_kcal"] for row in latest_health_7]),
+            "distance_km_avg_7d": avg([row["distance_km"] for row in latest_health_7]),
+            "sleep_hours_avg_7d": avg([row["sleep_hours"] for row in latest_health_7]),
+            "body_fat_latest": latest_non_null(health, "body_fat_percent"),
+            "total_kcal_avg_7d": avg([row["total_kcal"] for row in latest_health_7]),
         },
     }
 

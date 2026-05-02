@@ -1,5 +1,18 @@
 # Lokales Fitness-Dashboard
 
+## Feste Pfade
+
+```text
+BASE_DIR: C:\Tools\Yazio
+REPO_DIR: C:\Tools\Yazio\yazio-csv-exporter
+HEALTH_EXPORT_DIR: C:\Tools\Yazio\health-data
+YAZIO_DATA_DIR: C:\Tools\Yazio\yazio-csv-exporter\data\yazio
+DB_PATH: C:\Tools\Yazio\yazio-csv-exporter\db\fitness_dashboard.sqlite
+DASHBOARD_DIR: C:\Tools\Yazio\yazio-csv-exporter\dashboard
+```
+
+Der automatische Health-Connect-Export bleibt unter `C:\Tools\Yazio\health-data`. Es ist kein manuelles Kopieren von Health-Connect-Dateien ins Repository noetig.
+
 ## Voraussetzungen
 
 - Python 3
@@ -10,7 +23,7 @@
 ## Dashboard starten
 
 ```powershell
-cd dashboard
+cd C:\Tools\Yazio\yazio-csv-exporter\dashboard
 npm install
 npm run dev
 ```
@@ -19,13 +32,44 @@ Danach ist das Dashboard lokal unter `http://localhost:3000` erreichbar.
 
 ## Taeglicher Lauf
 
-Im Repository-Root:
-
 ```powershell
-.\scripts\daily_run.ps1
+C:\Tools\Yazio\yazio-csv-exporter\scripts\daily_run.ps1
 ```
 
-Das Script fuehrt den bestehenden Yazio-Export aus, importiert die CSV-Dateien in SQLite, liest optionale Body-Log-Daten, prueft Health-Connect-Exporte, erzeugt Metriken und schreibt den aktuellen AI-Report.
+Das Script wechselt selbst nach `C:\Tools\Yazio\yazio-csv-exporter`, fuehrt den bestehenden Yazio-Export aus, kopiert die erzeugten CSV-Dateien nach `data\yazio`, importiert Yazio, Body-Log und Health Connect in SQLite, analysiert den Fortschritt und erzeugt den aktuellen Report.
+
+## Yazio CSV
+
+Primaerer Importpfad:
+
+```text
+C:\Tools\Yazio\yazio-csv-exporter\data\yazio
+```
+
+Erwartete Dateien:
+
+- `daily_summary.csv`
+- `meal_summary.csv`
+- `nutrition_log.csv`
+- `export_diagnostics.csv`
+
+Falls dort keine CSVs liegen, sucht `scripts/import_yazio.py` weiterhin im Repository-Root.
+
+## Health Connect
+
+Primaerer Exportpfad:
+
+```text
+C:\Tools\Yazio\health-data
+```
+
+Der Importer sucht:
+
+- `C:\Tools\Yazio\health-data\health_connect_export.db`
+- `C:\Tools\Yazio\health-data\extracted\health_connect_export.db`
+- ZIP-Dateien unter `C:\Tools\Yazio\health-data`
+
+ZIP-Dateien werden nach `C:\Tools\Yazio\health-data\extracted` entpackt. Optional wird als Fallback auch `data\health-connect-export` im Repo geprueft.
 
 ## Windows Task Scheduler
 
@@ -33,8 +77,8 @@ Lege im Windows Task Scheduler eine neue Aufgabe an:
 
 - Trigger: taeglich zu einer passenden Uhrzeit
 - Aktion: `powershell.exe`
-- Argumente: `-ExecutionPolicy Bypass -File "PFAD_ZUM_REPO\scripts\daily_run.ps1"`
-- Starten in: `PFAD_ZUM_REPO`
+- Argumente: `-ExecutionPolicy Bypass -File "C:\Tools\Yazio\yazio-csv-exporter\scripts\daily_run.ps1"`
+- Starten in: `C:\Tools\Yazio\yazio-csv-exporter`
 
 ## OpenAI API-Key
 
@@ -46,18 +90,9 @@ $env:OPENAI_API_KEY = "..."
 
 Ohne API-Key erzeugt `scripts/generate_ai_report.py` eine lokale regelbasierte Empfehlung.
 
-## Health-Connect-Export
-
-Lege Health-Connect-Exporte unter diesem Pfad ab:
-
-```text
-data/health-connect-export/
-```
-
-ZIP- und CSV-Dateien werden aktuell erkannt und gemeldet. Der konkrete Parser wird ergaenzt, sobald ein echter Export mit stabilem Format vorliegt.
-
 ## Manuell zu pflegen
 
-- `data/body_log.csv` aus `data/body_log_template.csv` kopieren
-- Gewicht, Schritte, Training, Creatine, Hafermilch und Kommentare dort taeglich oder rueckwirkend eintragen
+- `data\body_log.csv` aus `data\body_log_template.csv` kopieren
+- Creatine, Hafermilch und Kommentare dort pflegen
+- Gewicht, Schritte und Training koennen durch Health Connect automatisch ergaenzt werden
 - Yazio-Zugangsdaten beim bestehenden Exporter eingeben, solange dieser interaktiv arbeitet

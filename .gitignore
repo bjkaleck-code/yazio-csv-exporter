@@ -1,6 +1,11 @@
 __pycache__/
 *.pyc
 db/*.sqlite
+data/yazio/*.csv
+data/yazio/*.json
+data/health-connect-export/*
+!data/health-connect-export/.gitkeep
+!data/yazio/.gitkeep
 dashboard/.next/
 dashboard/node_modules/
 dashboard/dev-server.*.log

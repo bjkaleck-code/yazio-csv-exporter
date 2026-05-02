@@ -3,13 +3,18 @@ import sqlite3
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[1]
-DB_PATH = ROOT / "db" / "fitness_dashboard.sqlite"
-SCHEMA_PATH = ROOT / "db" / "schema.sql"
+REPO_DIR = Path(__file__).resolve().parents[1]
+DATA_DIR = REPO_DIR / "data"
+YAZIO_DATA_DIR = DATA_DIR / "yazio"
+DB_PATH = REPO_DIR / "db" / "fitness_dashboard.sqlite"
+SCHEMA_PATH = REPO_DIR / "db" / "schema.sql"
 
-DAILY_CSV = ROOT / "daily_summary.csv"
-MEAL_CSV = ROOT / "meal_summary.csv"
-NUTRITION_CSV = ROOT / "nutrition_log.csv"
+CSV_FILES = {
+    "daily": "daily_summary.csv",
+    "meal": "meal_summary.csv",
+    "nutrition": "nutrition_log.csv",
+    "diagnostics": "export_diagnostics.csv",
+}
 
 
 def to_float(value):
@@ -27,6 +32,17 @@ def connect_db():
     with open(SCHEMA_PATH, "r", encoding="utf-8") as schema_file:
         con.executescript(schema_file.read())
     return con
+
+
+def resolve_csv_dir():
+    primary_files = [YAZIO_DATA_DIR / name for name in CSV_FILES.values()]
+    if any(path.exists() for path in primary_files):
+        print(f"Yazio-CSV-Pfad: {YAZIO_DATA_DIR}")
+        return YAZIO_DATA_DIR
+
+    print(f"Keine Yazio-CSVs in {YAZIO_DATA_DIR} gefunden.")
+    print(f"Fallback auf Repository-Root: {REPO_DIR}")
+    return REPO_DIR
 
 
 def read_csv(path):
@@ -133,10 +149,19 @@ def import_entries(con, rows):
 
 
 def main():
+    csv_dir = resolve_csv_dir()
+    daily_path = csv_dir / CSV_FILES["daily"]
+    meal_path = csv_dir / CSV_FILES["meal"]
+    nutrition_path = csv_dir / CSV_FILES["nutrition"]
+    diagnostics_path = csv_dir / CSV_FILES["diagnostics"]
+
+    if diagnostics_path.exists():
+        print(f"Diagnostik-CSV gefunden: {diagnostics_path}")
+
     with connect_db() as con:
-        daily = read_csv(DAILY_CSV)
-        meals = read_csv(MEAL_CSV)
-        entries = read_csv(NUTRITION_CSV)
+        daily = read_csv(daily_path)
+        meals = read_csv(meal_path)
+        entries = read_csv(nutrition_path)
 
         daily_count, daily_start, daily_end = import_daily(con, daily)
         meal_count, meal_start, meal_end = import_meals(con, meals)

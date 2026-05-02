@@ -51,6 +51,11 @@ export default async function Home() {
         <MetricCard label="Protein Oe" value={formatNumber(metrics.protein?.avg_30_days, " g")} />
         <MetricCard label="Schritte Oe 7 Tage" value={formatNumber(metrics.steps?.avg_7_days)} />
         <MetricCard label="Trainingstage 7 Tage" value={formatNumber(metrics.training?.days_7)} />
+        <MetricCard label="Distanz Oe 7 Tage" value={formatNumber(metrics.health?.distance_km_avg_7d, " km")} />
+        <MetricCard label="Aktive kcal Oe 7 Tage" value={formatNumber(metrics.health?.active_kcal_avg_7d, " kcal")} />
+        <MetricCard label="Schlaf Oe 7 Tage" value={formatNumber(metrics.health?.sleep_hours_avg_7d, " h")} />
+        <MetricCard label="Koerperfett aktuell" value={formatNumber(metrics.health?.body_fat_latest, " %")} />
+        <MetricCard label="Gesamtverbrauch Oe 7 Tage" value={formatNumber(metrics.health?.total_kcal_avg_7d, " kcal")} />
       </section>
 
       <section className="report-grid">

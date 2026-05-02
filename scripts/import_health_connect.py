@@ -1,28 +1,333 @@
+import os
+import sqlite3
+import zipfile
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[1]
-EXPORT_DIR = ROOT / "data" / "health-connect-export"
+REPO_DIR = Path(__file__).resolve().parents[1]
+DATA_DIR = REPO_DIR / "data"
+REPO_HEALTH_EXPORT_DIR = DATA_DIR / "health-connect-export"
+DB_PATH = REPO_DIR / "db" / "fitness_dashboard.sqlite"
+SCHEMA_PATH = REPO_DIR / "db" / "schema.sql"
+
+HEALTH_EXPORT_DIR = Path(
+    os.environ.get("HEALTH_CONNECT_EXPORT_DIR", r"C:\Tools\Yazio\health-data")
+)
+
+EPOCH_DATE = date(1970, 1, 1)
+
+
+def iso_date_from_local_date(local_date):
+    if local_date is None:
+        return None
+    try:
+        return (EPOCH_DATE + timedelta(days=int(local_date))).isoformat()
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def joule_to_kcal(value):
+    return float(value or 0) / 4184
+
+
+def connect_dashboard_db():
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(DB_PATH)
+    with open(SCHEMA_PATH, "r", encoding="utf-8") as schema_file:
+        con.executescript(schema_file.read())
+    return con
+
+
+def table_exists(con, table_name):
+    row = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def find_db_in_dir(directory):
+    direct = directory / "health_connect_export.db"
+    if safe_exists(direct):
+        return direct
+
+    extracted = directory / "extracted" / "health_connect_export.db"
+    if safe_exists(extracted):
+        return extracted
+
+    extracted_dir = directory / "extracted"
+    if safe_exists(extracted_dir):
+        matches = safe_rglob(extracted_dir, "health_connect_export.db")
+        if matches:
+            return matches[0]
+
+    return None
+
+
+def safe_exists(path):
+    try:
+        return path.exists()
+    except OSError as exc:
+        print(f"Pfad nicht lesbar, ueberspringe: {path} ({exc})")
+        return False
+
+
+def safe_glob(directory, pattern):
+    try:
+        return list(directory.glob(pattern))
+    except OSError as exc:
+        print(f"Pfad nicht lesbar, ueberspringe: {directory} ({exc})")
+        return []
+
+
+def safe_rglob(directory, pattern):
+    try:
+        return sorted(directory.rglob(pattern))
+    except OSError as exc:
+        print(f"Pfad nicht lesbar, ueberspringe: {directory} ({exc})")
+        return []
+
+
+def extract_zip_candidates(directory):
+    if not safe_exists(directory):
+        return None
+
+    zip_files = sorted(safe_glob(directory, "*.zip"), key=lambda path: path.stat().st_mtime, reverse=True)
+    if not zip_files:
+        return None
+
+    extracted_dir = directory / "extracted"
+    try:
+        extracted_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"Extract-Ziel nicht beschreibbar, ueberspringe: {extracted_dir} ({exc})")
+        return None
+    for zip_path in zip_files:
+        print(f"Entpacke Health-Connect-ZIP: {zip_path}")
+        try:
+            with zipfile.ZipFile(zip_path, "r") as archive:
+                archive.extractall(extracted_dir)
+        except zipfile.BadZipFile:
+            print(f"Ungueltige ZIP-Datei, ueberspringe: {zip_path}")
+            continue
+
+        found = find_db_in_dir(directory)
+        if found:
+            return found
+
+    return None
+
+
+def find_health_db():
+    print(f"Health-Connect-Pfad: {HEALTH_EXPORT_DIR}")
+
+    for directory in [HEALTH_EXPORT_DIR, REPO_HEALTH_EXPORT_DIR]:
+        if not safe_exists(directory):
+            print(f"Pfad nicht vorhanden, ueberspringe: {directory}")
+            continue
+
+        found = find_db_in_dir(directory)
+        if found:
+            return found
+
+        found = extract_zip_candidates(directory)
+        if found:
+            return found
+
+    return None
+
+
+def daily_row(daily, local_date):
+    iso_date = iso_date_from_local_date(local_date)
+    if not iso_date:
+        return None
+    return daily.setdefault(
+        iso_date,
+        {
+            "date": iso_date,
+            "steps": None,
+            "distance_km": None,
+            "active_kcal": None,
+            "total_kcal": None,
+            "workout_count": 0,
+            "workout_minutes": None,
+            "weight_kg": None,
+            "body_fat_percent": None,
+            "sleep_hours": None,
+        },
+    )
+
+
+def add_sum(con, daily, table_name, source_column, target_column, converter=lambda value: value):
+    if not table_exists(con, table_name):
+        print(f"Tabelle fehlt, ueberspringe: {table_name}")
+        return
+
+    query = f"SELECT local_date, SUM({source_column}) AS total FROM {table_name} GROUP BY local_date"
+    for local_date, total in con.execute(query):
+        row = daily_row(daily, local_date)
+        if row is not None:
+            row[target_column] = round(converter(total), 2)
+
+
+def import_workouts(con, daily):
+    table_name = "exercise_session_record_table"
+    if not table_exists(con, table_name):
+        print(f"Tabelle fehlt, ueberspringe: {table_name}")
+        return
+
+    for local_date, start_time, end_time in con.execute(
+        f"SELECT local_date, start_time, end_time FROM {table_name}"
+    ):
+        row = daily_row(daily, local_date)
+        if row is None:
+            continue
+        row["workout_count"] = (row["workout_count"] or 0) + 1
+        if start_time is not None and end_time is not None:
+            minutes = max(0, (float(end_time) - float(start_time)) / 60000)
+            row["workout_minutes"] = round((row["workout_minutes"] or 0) + minutes, 2)
+
+
+def import_latest_daily_value(con, daily, table_name, source_column, target_column, converter=lambda value: value):
+    if not table_exists(con, table_name):
+        print(f"Tabelle fehlt, ueberspringe: {table_name}")
+        return
+
+    latest = {}
+    query = f"SELECT local_date, time, {source_column} FROM {table_name} ORDER BY local_date, time"
+    for local_date, time_value, value in con.execute(query):
+        latest[local_date] = (time_value, value)
+
+    for local_date, (_time_value, value) in latest.items():
+        row = daily_row(daily, local_date)
+        if row is not None and value is not None:
+            row[target_column] = round(converter(value), 2)
+
+
+def import_sleep(con, daily):
+    table_name = "sleep_session_record_table"
+    if not table_exists(con, table_name):
+        print(f"Tabelle fehlt, ueberspringe: {table_name}")
+        return
+
+    for local_date, start_time, end_time in con.execute(
+        f"SELECT local_date, start_time, end_time FROM {table_name}"
+    ):
+        row = daily_row(daily, local_date)
+        if row is None or start_time is None or end_time is None:
+            continue
+        hours = max(0, (float(end_time) - float(start_time)) / 3600000)
+        row["sleep_hours"] = round((row["sleep_hours"] or 0) + hours, 2)
+
+
+def read_health_daily(source_db):
+    daily = {}
+    with sqlite3.connect(source_db) as con:
+        add_sum(con, daily, "steps_record_table", "count", "steps", lambda value: int(value or 0))
+        add_sum(con, daily, "distance_record_table", "distance", "distance_km", lambda value: float(value or 0) / 1000)
+        add_sum(con, daily, "active_calories_burned_record_table", "energy", "active_kcal", joule_to_kcal)
+        add_sum(con, daily, "total_calories_burned_record_table", "energy", "total_kcal", joule_to_kcal)
+        import_workouts(con, daily)
+        import_latest_daily_value(con, daily, "weight_record_table", "weight", "weight_kg", lambda value: float(value) / 1000)
+        import_latest_daily_value(con, daily, "body_fat_record_table", "percentage", "body_fat_percent", float)
+        import_sleep(con, daily)
+
+    return [daily[key] for key in sorted(daily)]
+
+
+def upsert_health_daily(con, rows):
+    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    con.executemany(
+        """
+        INSERT INTO health_daily (
+            date, steps, distance_km, active_kcal, total_kcal, workout_count,
+            workout_minutes, weight_kg, body_fat_percent, sleep_hours, source, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(date) DO UPDATE SET
+            steps = excluded.steps,
+            distance_km = excluded.distance_km,
+            active_kcal = excluded.active_kcal,
+            total_kcal = excluded.total_kcal,
+            workout_count = excluded.workout_count,
+            workout_minutes = excluded.workout_minutes,
+            weight_kg = excluded.weight_kg,
+            body_fat_percent = excluded.body_fat_percent,
+            sleep_hours = excluded.sleep_hours,
+            source = excluded.source,
+            updated_at = excluded.updated_at
+        """,
+        [
+            (
+                row["date"],
+                row["steps"],
+                row["distance_km"],
+                row["active_kcal"],
+                row["total_kcal"],
+                row["workout_count"],
+                row["workout_minutes"],
+                row["weight_kg"],
+                row["body_fat_percent"],
+                row["sleep_hours"],
+                "health_connect",
+                now,
+            )
+            for row in rows
+        ],
+    )
+
+
+def sync_body_metrics(con, rows):
+    con.executemany(
+        """
+        INSERT INTO body_metrics (
+            date, weight, steps, training, creatine, coffee_oat_milk_ml, comment
+        )
+        VALUES (?, ?, ?, ?, NULL, NULL, NULL)
+        ON CONFLICT(date) DO UPDATE SET
+            steps = COALESCE(excluded.steps, body_metrics.steps),
+            weight = COALESCE(excluded.weight, body_metrics.weight),
+            training = CASE
+                WHEN excluded.training = 1 THEN 1
+                ELSE body_metrics.training
+            END
+        """,
+        [
+            (
+                row["date"],
+                row["weight_kg"],
+                row["steps"],
+                1 if (row["workout_count"] or 0) > 0 else 0,
+            )
+            for row in rows
+        ],
+    )
 
 
 def main():
-    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-    files = sorted(
-        path for path in EXPORT_DIR.iterdir()
-        if path.is_file() and path.suffix.lower() in {".zip", ".csv"}
-    )
+    source_db = find_health_db()
+    if not source_db:
+        print(
+            "Keine Health-Connect-Datenbank gefunden. Erwartet wird "
+            "health_connect_export.db direkt im Health-Ordner, unter extracted, "
+            "oder in einer ZIP-Datei."
+        )
+        return
 
-    if files:
-        print("Health-Connect-Dateien gefunden:")
-        for path in files:
-            print(f" - {path.name}")
-    else:
-        print(f"Keine ZIP- oder CSV-Dateien in {EXPORT_DIR} gefunden.")
+    print(f"Health-Connect-DB gefunden: {source_db}")
+    rows = read_health_daily(source_db)
+    if not rows:
+        print("Health-Connect-DB gelesen, aber keine relevanten Tagesdaten gefunden.")
+        return
 
-    print(
-        "Health-Connect-Import ist vorbereitet. Der konkrete Parser wird ergaenzt, "
-        "sobald ein echter Export mit bekanntem Format vorliegt."
-    )
+    with connect_dashboard_db() as con:
+        upsert_health_daily(con, rows)
+        sync_body_metrics(con, rows)
+        con.commit()
+
+    print(f"health_daily importiert/aktualisiert: {len(rows)} Tage")
+    print("body_metrics aus Health Connect ergaenzt/aktualisiert.")
 
 
 if __name__ == "__main__":

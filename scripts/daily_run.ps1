@@ -1,7 +1,11 @@
 $ErrorActionPreference = "Stop"
 
-$RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
-Set-Location $RepoRoot
+$RepoDir = "C:\Tools\Yazio\yazio-csv-exporter"
+$YazioDataDir = Join-Path $RepoDir "data\yazio"
+$HealthExportDir = "C:\Tools\Yazio\health-data"
+
+Set-Location $RepoDir
+$env:HEALTH_CONNECT_EXPORT_DIR = $HealthExportDir
 
 function Invoke-Step {
     param(
@@ -17,12 +21,40 @@ function Invoke-Step {
     }
 }
 
-Write-Host "Starte taeglichen Fitness-Dashboard-Lauf in $RepoRoot"
+function Copy-YazioCsv {
+    New-Item -ItemType Directory -Path $YazioDataDir -Force | Out-Null
+
+    $Files = @(
+        "daily_summary.csv",
+        "meal_summary.csv",
+        "nutrition_log.csv",
+        "export_diagnostics.csv"
+    )
+
+    Write-Host ""
+    Write-Host "==> Yazio-CSVs nach data\yazio kopieren"
+    foreach ($File in $Files) {
+        $Source = Join-Path $RepoDir $File
+        $Target = Join-Path $YazioDataDir $File
+        if (Test-Path $Source) {
+            Copy-Item -LiteralPath $Source -Destination $Target -Force
+            Write-Host "Kopiert: $File -> $YazioDataDir"
+        } else {
+            Write-Host "Nicht gefunden, ueberspringe: $Source"
+        }
+    }
+}
+
+Write-Host "Starte taeglichen Fitness-Dashboard-Lauf"
+Write-Host "Repo: $RepoDir"
+Write-Host "Yazio CSV: $YazioDataDir"
+Write-Host "Health Connect: $HealthExportDir"
 
 Invoke-Step "Yazio CSV-Export" @("python", ".\yazio_export_to_csv.py")
+Copy-YazioCsv
 Invoke-Step "Yazio CSVs in SQLite importieren" @("python", ".\scripts\import_yazio.py")
 Invoke-Step "Body-Log importieren" @("python", ".\scripts\import_body_log.py")
-Invoke-Step "Health-Connect-Export pruefen" @("python", ".\scripts\import_health_connect.py")
+Invoke-Step "Health-Connect-Export importieren" @("python", ".\scripts\import_health_connect.py")
 Invoke-Step "Fortschritt analysieren" @("python", ".\scripts\analyze_progress.py")
 Invoke-Step "AI-Report erzeugen" @("python", ".\scripts\generate_ai_report.py")
 

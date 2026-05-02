@@ -7,11 +7,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[1]
-DB_PATH = ROOT / "db" / "fitness_dashboard.sqlite"
-SCHEMA_PATH = ROOT / "db" / "schema.sql"
-METRICS_PATH = ROOT / "data" / "latest_metrics.json"
-REPORT_PATH = ROOT / "data" / "latest_ai_report.json"
+REPO_DIR = Path(__file__).resolve().parents[1]
+DB_PATH = REPO_DIR / "db" / "fitness_dashboard.sqlite"
+SCHEMA_PATH = REPO_DIR / "db" / "schema.sql"
+METRICS_PATH = REPO_DIR / "data" / "latest_metrics.json"
+REPORT_PATH = REPO_DIR / "data" / "latest_ai_report.json"
 OPENAI_URL = "https://api.openai.com/v1/responses"
 
 
@@ -48,14 +48,34 @@ def fallback_report(metrics):
     calories_7 = metric(metrics, "calories", "avg_7_days")
     weight_change = metric(metrics, "weight", "change")
     creatine_active = metric(metrics, "creatine", "active_latest")
+    training_7 = metric(metrics, "training", "days_7")
+    sleep_7 = metric(metrics, "health", "sleep_hours_avg_7d")
+    active_kcal_7 = metric(metrics, "health", "active_kcal_avg_7d")
+    body_fat_latest = metric(metrics, "health", "body_fat_latest")
 
     if steps_7 is not None and steps_7 < 5000:
         focus = "Heute Schritte erhoehen."
-        recommendation = "Plane einen zusaetzlichen Spaziergang ein, damit der 7-Tage-Schnitt steigt."
+        recommendation = "Plane zusaetzliche Alltagsbewegung ein, damit der 7-Tage-Schnitt steigt."
         flags.append("Schritte unter 5000 im 7-Tage-Schnitt.")
 
-    if creatine_active and weight_change is not None and abs(weight_change) < 0.3:
-        flags.append("Creatine aktiv: kurzfristige Wasserbindung kann Gewichtsstagnation erklaeren.")
+    if sleep_7 is not None and sleep_7 < 7:
+        flags.append("Schlaf unter 7 Stunden im 7-Tage-Schnitt: Regeneration beobachten.")
+
+    if (
+        active_kcal_7 is not None
+        and steps_7 is not None
+        and active_kcal_7 < 250
+        and steps_7 < 5000
+    ):
+        focus = "Alltagsbewegung priorisieren."
+        recommendation = "Erhoehe heute zuerst Bewegung im Alltag, bevor du Kalorien weiter senkst."
+        flags.append("Aktive kcal und Schritte sind niedrig.")
+
+    if (creatine_active or (training_7 or 0) > 0) and weight_change is not None and abs(weight_change) < 0.3:
+        flags.append("Training oder Creatine aktiv: kurzfristige Wasserbindung kann Gewichtsstagnation erklaeren.")
+
+    if body_fat_latest is not None:
+        flags.append(f"Koerperfettwert vorhanden: {body_fat_latest} Prozent. Nur im Trend bewerten.")
 
     if protein_gkg is not None and protein_gkg < 1.6:
         recommendation = "Erhoehe Protein schrittweise Richtung mindestens 1.6 g/kg."
@@ -101,6 +121,7 @@ def call_openai(metrics, api_key):
                 "role": "system",
                 "content": (
                     "Du bist ein vorsichtiger Fitness- und Ernaehrungscoach. "
+                    "Nutze Yazio-, Body-Log- und Health-Connect-Kontext. "
                     "Gib konkrete, knappe Empfehlungen auf Deutsch. Keine medizinischen Diagnosen."
                 ),
             },

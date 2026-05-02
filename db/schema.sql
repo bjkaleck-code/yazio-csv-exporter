@@ -61,3 +61,18 @@ CREATE TABLE IF NOT EXISTS ai_reports (
     confidence TEXT,
     created_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS health_daily (
+    date TEXT PRIMARY KEY,
+    steps INTEGER,
+    distance_km REAL,
+    active_kcal REAL,
+    total_kcal REAL,
+    workout_count INTEGER,
+    workout_minutes REAL,
+    weight_kg REAL,
+    body_fat_percent REAL,
+    sleep_hours REAL,
+    source TEXT,
+    updated_at TEXT
+);
