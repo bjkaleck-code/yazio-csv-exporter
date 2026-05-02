@@ -1,10 +1,11 @@
 import json
 import csv
+import getpass
+import os
 import subprocess
+from pathlib import Path
 
 # Configuration
-EMAIL = input("📧 Enter your Yazio email: ").strip()
-PASSWORD = input("🔐 Enter your Yazio password: ").strip()
 EXPORTER_PATH = r"C:\Tools\Yazio\Yazio-Exporter\YazioExport.exe"
 TOKEN_FILE = "token.txt"
 DAYS_FILE = "days.json"
@@ -13,18 +14,88 @@ DETAIL_CSV = "nutrition_log.csv"
 MEAL_SUMMARY_CSV = "meal_summary.csv"
 DAILY_SUMMARY_CSV = "daily_summary.csv"
 DIAGNOSTICS_CSV = "export_diagnostics.csv"
+EXPORT_FROM = "2026-04-11"
+EXPORT_TO = "2026-05-02"
 
-# Login
-print("🔑 Logging in to Yazio...")
-subprocess.run([EXPORTER_PATH, "login", EMAIL, PASSWORD, "--out", TOKEN_FILE], check=True)
+
+def run_exporter(args, error_message):
+    try:
+        subprocess.run([EXPORTER_PATH, *args], check=True)
+        return True
+    except subprocess.CalledProcessError:
+        print(error_message)
+        return False
+
+
+def get_credentials():
+    email = os.environ.get("YAZIO_EMAIL", "").strip()
+    password = os.environ.get("YAZIO_PASSWORD", "")
+
+    if not email:
+        email = input("Yazio email: ").strip()
+    if not password:
+        password = getpass.getpass("Yazio password: ")
+
+    if not email or not password:
+        raise RuntimeError("Yazio email/password fehlen. Setze YAZIO_EMAIL und YAZIO_PASSWORD oder gib sie interaktiv ein.")
+
+    return email, password
+
+
+def login_and_save_token():
+    email, password = get_credentials()
+    print("Logging in to Yazio...")
+    if not run_exporter(
+        ["login", email, password, "--out", TOKEN_FILE],
+        "Yazio login fehlgeschlagen. Zugangsdaten wurden nicht ausgegeben.",
+    ):
+        raise RuntimeError("Yazio login fehlgeschlagen.")
+
+
+def export_days_with_current_token():
+    return run_exporter(
+        [
+            "days",
+            "--token",
+            TOKEN_FILE,
+            "--what",
+            "all",
+            "--from",
+            EXPORT_FROM,
+            "--to",
+            EXPORT_TO,
+            "--out",
+            DAYS_FILE,
+        ],
+        "Yazio Token ist ungültig oder der Tagesexport ist fehlgeschlagen.",
+    )
+
+
+def ensure_days_export():
+    if Path(TOKEN_FILE).exists():
+        print("Bestehendes Yazio token.txt gefunden, versuche Export ohne Login...")
+        if export_days_with_current_token():
+            return
+        print("Token konnte nicht verwendet werden. Neuer Login wird versucht.")
+    else:
+        print("Kein token.txt gefunden. Login wird versucht.")
+
+    login_and_save_token()
+    if not export_days_with_current_token():
+        raise RuntimeError("Yazio Tagesexport ist auch nach erneutem Login fehlgeschlagen.")
+
 
 # Export diary data
-print("📅 Exporting diary data...")
-subprocess.run([EXPORTER_PATH, "days", "--token", TOKEN_FILE, "--what", "all", "--from", "2026-04-11", "--to", "2026-05-02", "--out", DAYS_FILE], check=True)
+print("Exporting diary data...")
+ensure_days_export()
 
 # Export product data
-print("📦 Exporting product data...")
-subprocess.run([EXPORTER_PATH, "products", "--token", TOKEN_FILE, "--from", DAYS_FILE, "-o", PRODUCTS_FILE], check=True)
+print("Exporting product data...")
+if not run_exporter(
+    ["products", "--token", TOKEN_FILE, "--from", DAYS_FILE, "-o", PRODUCTS_FILE],
+    "Yazio Produktexport fehlgeschlagen.",
+):
+    raise RuntimeError("Yazio Produktexport fehlgeschlagen.")
 
 
 def fix_encoding(name):

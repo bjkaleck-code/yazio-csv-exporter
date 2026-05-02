@@ -31,7 +31,15 @@ It automatically calculates total calories, protein, fat, and carbohydrates per 
 ```bash
 python3 yazio_export_to_csv.py
 ```
-4. Enter your Yazio login credentials when prompted
+4. Optional: store your Yazio credentials as local environment variables so the daily run can login without prompts:
+
+```powershell
+setx YAZIO_EMAIL "DEINE_EMAIL"
+setx YAZIO_PASSWORD "DEIN_PASSWORT"
+```
+
+Close PowerShell and open a new one afterwards. The script first reuses `token.txt` if it exists. If the token is missing or no longer valid, it logs in with `YAZIO_EMAIL` and `YAZIO_PASSWORD`. Only if those variables are missing will it ask interactively.
+
 5. After completion, the script will generate the following CSV files:
 
 nutrition_log.csv
