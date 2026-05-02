@@ -5,7 +5,7 @@ import subprocess
 # Configuration
 EMAIL = input("📧 Enter your Yazio email: ").strip()
 PASSWORD = input("🔐 Enter your Yazio password: ").strip()
-EXPORTER_PATH = "/root/Yazio-Exporter/YazioExport"
+EXPORTER_PATH = r"C:\Tools\Yazio\Yazio-Exporter\YazioExport.exe"
 TOKEN_FILE = "token.txt"
 DAYS_FILE = "days.json"
 PRODUCTS_FILE = "products.json"
@@ -20,7 +20,7 @@ subprocess.run([EXPORTER_PATH, "login", EMAIL, PASSWORD, "--out", TOKEN_FILE], c
 
 # Export diary data
 print("📅 Exporting diary data...")
-subprocess.run([EXPORTER_PATH, "days", "--token", TOKEN_FILE, "--what", "all", "--from", "2025-01-01", "--to", "2025-12-31", "--out", DAYS_FILE], check=True)
+subprocess.run([EXPORTER_PATH, "days", "--token", TOKEN_FILE, "--what", "all", "--from", "2026-04-11", "--to", "2026-05-02", "--out", DAYS_FILE], check=True)
 
 # Export product data
 print("📦 Exporting product data...")
@@ -170,10 +170,17 @@ for date_key, content in days_data.items():
         fat_g = to_float(nutrients.get("nutrient.fat", 0))
         carbs_g = to_float(nutrients.get("nutrient.carb", 0))
 
-        total_kcal = round2(amount * kcal_g)
-        total_protein = round2(amount * protein_g)
-        total_fat = round2(amount * fat_g)
-        total_carbs = round2(amount * carbs_g)
+        # Yazio simple_products store absolute nutrients when amount is missing or zero.
+        if amount > 0:
+            total_kcal = round2(amount * kcal_g)
+            total_protein = round2(amount * protein_g)
+            total_fat = round2(amount * fat_g)
+            total_carbs = round2(amount * carbs_g)
+        else:
+            total_kcal = round2(kcal_g)
+            total_protein = round2(protein_g)
+            total_fat = round2(fat_g)
+            total_carbs = round2(carbs_g)
 
         meal_type = item.get("daytime", "unknown")
         key_meal = (date_key, meal_type)
