@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -59,7 +60,46 @@ def first_non_null(rows, key):
     return None
 
 
+def rows_by_date(rows):
+    return {row["date"]: row for row in rows}
+
+
+def build_series(dates, nutrition, body, health):
+    nutrition_by_date = rows_by_date(nutrition)
+    body_by_date = rows_by_date(body)
+    health_by_date = rows_by_date(health)
+
+    series = []
+    for day in dates:
+        nutrition_row = nutrition_by_date.get(day)
+        body_row = body_by_date.get(day)
+        health_row = health_by_date.get(day)
+        series.append(
+            {
+                "date": day,
+                "calories": nutrition_row["calories"] if nutrition_row else None,
+                "protein": nutrition_row["protein"] if nutrition_row else None,
+                "energy_goal": nutrition_row["energy_goal"] if nutrition_row else None,
+                "steps": body_row["steps"] if body_row else None,
+                "weight": body_row["weight"] if body_row else None,
+                "training": body_row["training"] if body_row else None,
+                "creatine": body_row["creatine"] if body_row else None,
+                "coffee_oat_milk_ml": body_row["coffee_oat_milk_ml"] if body_row else None,
+                "distance_km": health_row["distance_km"] if health_row else None,
+                "active_kcal": health_row["active_kcal"] if health_row else None,
+                "total_kcal": health_row["total_kcal"] if health_row else None,
+                "workout_count": health_row["workout_count"] if health_row else None,
+                "workout_minutes": health_row["workout_minutes"] if health_row else None,
+                "body_fat_percent": health_row["body_fat_percent"] if health_row else None,
+                "sleep_hours": health_row["sleep_hours"] if health_row else None,
+            }
+        )
+    return series
+
+
 def main():
+    generated_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
     with connect_db() as con:
         nutrition = fetch_rows(con, "daily_nutrition")
         body = fetch_rows(con, "body_metrics")
@@ -73,7 +113,13 @@ def main():
     if not all_dates:
         metrics = {
             "status": "empty",
+            "generated_at": generated_at,
             "message": "Keine importierten Daten gefunden.",
+            "health": {
+                "total_kcal_reliable": False,
+                "total_kcal_note": "Health Connect total_kcal may be incomplete",
+            },
+            "series": [],
         }
         OUTPUT_PATH.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
         print(f"Keine Daten gefunden. Geschrieben: {OUTPUT_PATH}")
@@ -113,6 +159,7 @@ def main():
 
     metrics = {
         "status": "ok",
+        "generated_at": generated_at,
         "period": {"start": all_dates[0], "end": all_dates[-1]},
         "calories": {
             "avg_7_days": avg_calories_7,
@@ -154,7 +201,10 @@ def main():
             "sleep_hours_avg_7d": avg([row["sleep_hours"] for row in latest_health_7]),
             "body_fat_latest": latest_non_null(health, "body_fat_percent"),
             "total_kcal_avg_7d": avg([row["total_kcal"] for row in latest_health_7]),
+            "total_kcal_reliable": False,
+            "total_kcal_note": "Health Connect total_kcal may be incomplete",
         },
+        "series": build_series(all_dates, nutrition, body, health),
     }
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)

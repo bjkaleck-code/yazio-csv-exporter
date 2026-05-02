@@ -305,6 +305,45 @@ def sync_body_metrics(con, rows):
     )
 
 
+def count_values(rows, key):
+    return sum(1 for row in rows if row.get(key) is not None)
+
+
+def print_source_status(rows):
+    counts = {
+        "steps": count_values(rows, "steps"),
+        "distance_km": count_values(rows, "distance_km"),
+        "active_kcal": count_values(rows, "active_kcal"),
+        "total_kcal": count_values(rows, "total_kcal"),
+        "workouts": sum(1 for row in rows if (row.get("workout_count") or 0) > 0),
+        "weight": count_values(rows, "weight_kg"),
+        "body_fat": count_values(rows, "body_fat_percent"),
+        "sleep": count_values(rows, "sleep_hours"),
+    }
+
+    print("")
+    print("Health-Connect Quellenstatus:")
+    for key in [
+        "steps",
+        "distance_km",
+        "active_kcal",
+        "total_kcal",
+        "workouts",
+        "weight",
+        "body_fat",
+        "sleep",
+    ]:
+        suffix = " (Hinweis: moeglicherweise unvollstaendig)" if key == "total_kcal" else ""
+        print(f"{key}: {counts[key]} Tage{suffix}")
+
+    total_values = [row["total_kcal"] for row in rows if row.get("total_kcal") is not None]
+    if total_values and (sum(total_values) / len(total_values)) < 1200:
+        print(
+            "Hinweis: total_kcal aus Health Connect wirkt möglicherweise unvollständig "
+            "und wird im Dashboard nicht als echter Gesamtverbrauch genutzt."
+        )
+
+
 def main():
     source_db = find_health_db()
     if not source_db:
@@ -328,6 +367,7 @@ def main():
 
     print(f"health_daily importiert/aktualisiert: {len(rows)} Tage")
     print("body_metrics aus Health Connect ergaenzt/aktualisiert.")
+    print_source_status(rows)
 
 
 if __name__ == "__main__":

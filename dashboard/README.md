@@ -22,6 +22,16 @@ Der automatische Health-Connect-Export bleibt unter `C:\Tools\Yazio\health-data`
 
 ## Dashboard starten
 
+Empfohlen:
+
+```powershell
+C:\Tools\Yazio\yazio-csv-exporter\scripts\start_dashboard.ps1
+```
+
+Der Starter fuehrt zuerst `daily_run.ps1` aus. Wenn Port 3000 bereits belegt ist, wird nur der Browser geoeffnet. Wenn Port 3000 frei ist, startet der Starter `npm run dev` im Dashboard-Ordner und oeffnet danach `http://localhost:3000`.
+
+Manuell:
+
 ```powershell
 cd C:\Tools\Yazio\yazio-csv-exporter\dashboard
 npm install
@@ -87,6 +97,14 @@ Setze den Key als Umgebungsvariable, nicht in Dateien:
 ```powershell
 $env:OPENAI_API_KEY = "..."
 ```
+
+Permanent fuer neue Terminals:
+
+```powershell
+setx OPENAI_API_KEY "DEIN_API_KEY_HIER"
+```
+
+Danach ein neues Terminal oeffnen.
 
 Ohne API-Key erzeugt `scripts/generate_ai_report.py` eine lokale regelbasierte Empfehlung.
 
