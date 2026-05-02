@@ -1,8 +1,6 @@
-
 import json
 import csv
 import subprocess
-import os
 
 # Configuration
 EMAIL = input("📧 Enter your Yazio email: ").strip()
@@ -14,6 +12,7 @@ PRODUCTS_FILE = "products.json"
 DETAIL_CSV = "nutrition_log.csv"
 MEAL_SUMMARY_CSV = "meal_summary.csv"
 DAILY_SUMMARY_CSV = "daily_summary.csv"
+DIAGNOSTICS_CSV = "export_diagnostics.csv"
 
 # Login
 print("🔑 Logging in to Yazio...")
@@ -27,119 +26,271 @@ subprocess.run([EXPORTER_PATH, "days", "--token", TOKEN_FILE, "--what", "all", "
 print("📦 Exporting product data...")
 subprocess.run([EXPORTER_PATH, "products", "--token", TOKEN_FILE, "--from", DAYS_FILE, "-o", PRODUCTS_FILE], check=True)
 
-# Helpers
+
 def fix_encoding(name):
     try:
-        return name.encode('latin1').decode('utf-8')
-    except:
+        return name.encode("latin1").decode("utf-8")
+    except Exception:
         return name
 
-def calc_total_kcal(amount, kcal_per_gram):
+
+def to_float(value):
     try:
-        return round(float(amount) * float(kcal_per_gram), 2)
-    except:
+        return float(value or 0)
+    except (TypeError, ValueError):
         return 0.0
 
+
+def round2(value):
+    return round(to_float(value), 2)
+
+
 # Load data
-with open(DAYS_FILE, 'r', encoding='utf-8') as f:
+with open(DAYS_FILE, "r", encoding="utf-8") as f:
     days_data = json.load(f)
 
-with open(PRODUCTS_FILE, 'r', encoding='utf-8') as f:
+with open(PRODUCTS_FILE, "r", encoding="utf-8") as f:
     products_data = json.load(f)
 
-product_lookup = {pid: pdata for pid, pdata in products_data.items()}
+product_lookup = {pid: pdata for pid, pdata in products_data.items()} if isinstance(products_data, dict) else {}
+
 rows = []
 summary_by_meal = {}
-summary_by_day = {}
+diagnostics_by_day = {}
 
-# Process entries
-for date, content in days_data.items():
-    consumed = content.get('consumed')
-    if not consumed or not isinstance(consumed, dict):
+DETAIL_FIELDS = [
+    "Date",
+    "Time",
+    "Meal",
+    "Type",
+    "Product",
+    "Source",
+    "Amount",
+    "Unit",
+    "Portions",
+    "Calories/g",
+    "Calories total",
+    "Protein/g",
+    "Fat/g",
+    "Carbs/g",
+    "Protein total",
+    "Fat total",
+    "Carbs total",
+]
+
+for date_key, content in days_data.items():
+    if not isinstance(content, dict):
         continue
 
-    products = consumed.get('products', [])
-    if not isinstance(products, list):
-        continue
+    consumed = content.get("consumed")
+    consumed = consumed if isinstance(consumed, dict) else {}
 
-    for item in products:
+    daily = content.get("daily")
+    daily = daily if isinstance(daily, dict) else {}
+
+    diag_entry = {
+        "products_count": 0,
+        "simple_products_count": 0,
+        "recipe_portions_count": 0,
+        "official_daily_calories": round2(daily.get("energy", 0)),
+        "calculated_detail_calories": 0.0,
+    }
+
+    day_products = consumed.get("products", [])
+    if not isinstance(day_products, list):
+        day_products = []
+
+    for item in day_products:
         if not isinstance(item, dict):
             continue
 
-        product_id = item.get('product_id', '')
-        product = product_lookup.get(product_id, {})
-        name = fix_encoding(product.get('name', 'Unknown'))
-        nutrients = product.get('nutrients', {})
+        diag_entry["products_count"] += 1
 
-        kcal_g = float(nutrients.get('energy.energy', 0) or 0)
-        protein_g = float(nutrients.get('nutrient.protein', 0) or 0)
-        fat_g = float(nutrients.get('nutrient.fat', 0) or 0)
-        carbs_g = float(nutrients.get('nutrient.carb', 0) or 0)
-        amount = float(item.get('amount', 0) or 0)
+        product_id = item.get("product_id", "")
+        product = product_lookup.get(product_id, {}) if isinstance(product_lookup, dict) else {}
+        if not isinstance(product, dict):
+            product = {}
 
-        total_kcal = calc_total_kcal(amount, kcal_g)
-        total_protein = round(amount * protein_g, 2)
-        total_fat = round(amount * fat_g, 2)
-        total_carbs = round(amount * carbs_g, 2)
+        name = fix_encoding(product.get("name", "Unknown"))
+        nutrients = product.get("nutrients", {}) if isinstance(product.get("nutrients", {}), dict) else {}
 
-        meal_type = item.get('daytime', 'unknown')
-        key_meal = (date, meal_type)
-        key_day = date
+        kcal_g = to_float(nutrients.get("energy.energy", 0))
+        protein_g = to_float(nutrients.get("nutrient.protein", 0))
+        fat_g = to_float(nutrients.get("nutrient.fat", 0))
+        carbs_g = to_float(nutrients.get("nutrient.carb", 0))
+        amount = to_float(item.get("amount", 0))
 
-        if key_meal not in summary_by_meal:
-            summary_by_meal[key_meal] = 0.0
-        summary_by_meal[key_meal] += total_kcal
+        total_kcal = round2(amount * kcal_g)
+        total_protein = round2(amount * protein_g)
+        total_fat = round2(amount * fat_g)
+        total_carbs = round2(amount * carbs_g)
 
-        if key_day not in summary_by_day:
-            summary_by_day[key_day] = {'kcal': 0.0, 'protein': 0.0, 'fat': 0.0, 'carbs': 0.0}
-        summary_by_day[key_day]['kcal'] += total_kcal
-        summary_by_day[key_day]['protein'] += total_protein
-        summary_by_day[key_day]['fat'] += total_fat
-        summary_by_day[key_day]['carbs'] += total_carbs
+        meal_type = item.get("daytime", "unknown")
+        key_meal = (date_key, meal_type)
+        summary_by_meal[key_meal] = summary_by_meal.get(key_meal, 0.0) + total_kcal
+        diag_entry["calculated_detail_calories"] += total_kcal
 
-        rows.append({
-            'Date': date,
-            'Time': item.get('date', ''),
-            'Meal': meal_type,
-            'Product': name,
-            'Amount': amount,
-            'Unit': item.get('serving', ''),
-            'Portions': item.get('serving_quantity', ''),
-            'Calories/g': kcal_g,
-            'Calories total': total_kcal,
-            'Protein/g': protein_g,
-            'Fat/g': fat_g,
-            'Carbs/g': carbs_g,
-            'Protein total': total_protein,
-            'Fat total': total_fat,
-            'Carbs total': total_carbs
-        })
+        rows.append(
+            {
+                "Date": date_key,
+                "Time": item.get("date", ""),
+                "Meal": meal_type,
+                "Type": item.get("type", ""),
+                "Product": name,
+                "Source": "product",
+                "Amount": amount,
+                "Unit": item.get("serving", ""),
+                "Portions": item.get("serving_quantity", ""),
+                "Calories/g": calories_per_unit,
+                "Calories total": total_kcal,
+                "Protein/g": protein_per_unit,
+                "Fat/g": fat_per_unit,
+                "Carbs/g": carbs_per_unit,
+                "Protein total": total_protein,
+                "Fat total": total_fat,
+                "Carbs total": total_carbs,
+            }
+        )
 
-# Write CSV files
-with open(DETAIL_CSV, 'w', newline='', encoding='utf-8') as f:
-    writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+    day_simple_products = consumed.get("simple_products", [])
+    if not isinstance(day_simple_products, list):
+        day_simple_products = []
+
+    for item in day_simple_products:
+        if not isinstance(item, dict):
+            continue
+
+        diag_entry["simple_products_count"] += 1
+
+        nutrients = item.get("nutrients", {}) if isinstance(item.get("nutrients", {}), dict) else {}
+        raw_amount = item.get("amount")
+        amount = to_float(raw_amount)
+
+        kcal_g = to_float(nutrients.get("energy.energy", 0))
+        protein_g = to_float(nutrients.get("nutrient.protein", 0))
+        fat_g = to_float(nutrients.get("nutrient.fat", 0))
+        carbs_g = to_float(nutrients.get("nutrient.carb", 0))
+
+        # For simple_products, nutrients are often already absolute per consumed entry.
+        # If amount is missing/non-positive, use nutrient values directly as totals.
+        if raw_amount is None or amount <= 0:
+            total_kcal = round2(kcal_g)
+            total_protein = round2(protein_g)
+            total_fat = round2(fat_g)
+            total_carbs = round2(carbs_g)
+            amount_value = ""
+            calories_per_unit = ""
+            protein_per_unit = ""
+            fat_per_unit = ""
+            carbs_per_unit = ""
+        else:
+            total_kcal = round2(amount * kcal_g)
+            total_protein = round2(amount * protein_g)
+            total_fat = round2(amount * fat_g)
+            total_carbs = round2(amount * carbs_g)
+            amount_value = amount
+            calories_per_unit = kcal_g
+            protein_per_unit = protein_g
+            fat_per_unit = fat_g
+            carbs_per_unit = carbs_g
+
+        meal_type = item.get("daytime", "unknown")
+        key_meal = (date_key, meal_type)
+        summary_by_meal[key_meal] = summary_by_meal.get(key_meal, 0.0) + total_kcal
+        diag_entry["calculated_detail_calories"] += total_kcal
+
+        rows.append(
+            {
+                "Date": date_key,
+                "Time": item.get("date", ""),
+                "Meal": meal_type,
+                "Type": item.get("type", ""),
+                "Product": fix_encoding(item.get("name", "Unknown")),
+                "Source": "simple_product",
+                "Amount": amount_value,
+                "Unit": item.get("serving", ""),
+                "Portions": item.get("serving_quantity", ""),
+                "Calories/g": calories_per_unit,
+                "Calories total": total_kcal,
+                "Protein/g": protein_per_unit,
+                "Fat/g": fat_per_unit,
+                "Carbs/g": carbs_per_unit,
+                "Protein total": total_protein,
+                "Fat total": total_fat,
+                "Carbs total": total_carbs,
+            }
+        )
+
+    day_recipe_portions = consumed.get("recipe_portions", [])
+    if not isinstance(day_recipe_portions, list):
+        day_recipe_portions = []
+    diag_entry["recipe_portions_count"] = len([p for p in day_recipe_portions if isinstance(p, dict)])
+
+    diagnostics_by_day[date_key] = diag_entry
+
+# Write detail CSV (always with header)
+with open(DETAIL_CSV, "w", newline="", encoding="utf-8") as f:
+    writer = csv.DictWriter(f, fieldnames=DETAIL_FIELDS)
     writer.writeheader()
     writer.writerows(rows)
 
-with open(MEAL_SUMMARY_CSV, 'w', newline='', encoding='utf-8') as f:
+# Meal summary from detailed rows (products + simple_products)
+with open(MEAL_SUMMARY_CSV, "w", newline="", encoding="utf-8") as f:
     writer = csv.writer(f)
-    writer.writerow(['Date', 'Meal', 'Calories total'])
+    writer.writerow(["Date", "Meal", "Calories total"])
     for (date, meal), total in sorted(summary_by_meal.items()):
-        writer.writerow([date, meal, round(total, 2)])
+        writer.writerow([date, meal, round2(total)])
 
-with open(DAILY_SUMMARY_CSV, 'w', newline='', encoding='utf-8') as f:
+# Daily summary from official daily values in days.json
+with open(DAILY_SUMMARY_CSV, "w", newline="", encoding="utf-8") as f:
     writer = csv.writer(f)
-    writer.writerow(['Date', 'Calories total', 'Protein total', 'Fat total', 'Carbs total'])
-    for date, data in sorted(summary_by_day.items()):
-        writer.writerow([
-            date,
-            round(data['kcal'], 2),
-            round(data['protein'], 2),
-            round(data['fat'], 2),
-            round(data['carbs'], 2)
-        ])
+    writer.writerow(["Date", "Calories total", "Protein total", "Fat total", "Carbs total", "Energy goal"])
+    for date_key, content in sorted(days_data.items()):
+        if not isinstance(content, dict):
+            continue
+        daily = content.get("daily")
+        daily = daily if isinstance(daily, dict) else {}
+        summary_date = daily.get("date") or date_key
+        writer.writerow(
+            [
+                summary_date,
+                round2(daily.get("energy", 0)),
+                round2(daily.get("protein", 0)),
+                round2(daily.get("fat", 0)),
+                round2(daily.get("carb", 0)),
+                round2(daily.get("energy_goal", 0)),
+            ]
+        )
+
+# Optional diagnostics file
+with open(DIAGNOSTICS_CSV, "w", newline="", encoding="utf-8") as f:
+    writer = csv.writer(f)
+    writer.writerow([
+        "Date",
+        "Products count",
+        "Simple products count",
+        "Recipe portions count",
+        "Official daily calories",
+        "Calculated detail calories",
+        "Difference",
+    ])
+    for date_key, diag in sorted(diagnostics_by_day.items()):
+        calculated = round2(diag.get("calculated_detail_calories", 0))
+        official = round2(diag.get("official_daily_calories", 0))
+        writer.writerow(
+            [
+                date_key,
+                diag.get("products_count", 0),
+                diag.get("simple_products_count", 0),
+                diag.get("recipe_portions_count", 0),
+                official,
+                calculated,
+                round2(official - calculated),
+            ]
+        )
 
 print("✅ CSV files created:")
 print(f" - {DETAIL_CSV}")
 print(f" - {MEAL_SUMMARY_CSV}")
 print(f" - {DAILY_SUMMARY_CSV}")
+print(f" - {DIAGNOSTICS_CSV}")
