@@ -1,0 +1,9 @@
+{
+  "summary": "Lokale regelbasierte Auswertung erstellt.",
+  "recommendation": "Halte den aktuellen Kurs und pruefe woechentlich den Trend.",
+  "focus_today": "Daten weiter pflegen und Tagesroutine stabil halten.",
+  "risk_flags": [],
+  "confidence": "low",
+  "created_at": "2026-05-02T21:46:02+00:00",
+  "source": "local_rules"
+}

@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+db/*.sqlite
+dashboard/.next/
+dashboard/node_modules/
+dashboard/dev-server.*.log
+dashboard/package-lock.json
