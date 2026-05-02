@@ -141,11 +141,11 @@ for date_key, content in days_data.items():
                 "Amount": amount,
                 "Unit": item.get("serving", ""),
                 "Portions": item.get("serving_quantity", ""),
-                "Calories/g": calories_per_unit,
+                "Calories/g": kcal_g,
                 "Calories total": total_kcal,
-                "Protein/g": protein_per_unit,
-                "Fat/g": fat_per_unit,
-                "Carbs/g": carbs_per_unit,
+                "Protein/g": protein_g,
+                "Fat/g": fat_g,
+                "Carbs/g": carbs_g,
                 "Protein total": total_protein,
                 "Fat total": total_fat,
                 "Carbs total": total_carbs,
@@ -163,36 +163,17 @@ for date_key, content in days_data.items():
         diag_entry["simple_products_count"] += 1
 
         nutrients = item.get("nutrients", {}) if isinstance(item.get("nutrients", {}), dict) else {}
-        raw_amount = item.get("amount")
-        amount = to_float(raw_amount)
+        amount = to_float(item.get("amount", 0))
 
         kcal_g = to_float(nutrients.get("energy.energy", 0))
         protein_g = to_float(nutrients.get("nutrient.protein", 0))
         fat_g = to_float(nutrients.get("nutrient.fat", 0))
         carbs_g = to_float(nutrients.get("nutrient.carb", 0))
 
-        # For simple_products, nutrients are often already absolute per consumed entry.
-        # If amount is missing/non-positive, use nutrient values directly as totals.
-        if raw_amount is None or amount <= 0:
-            total_kcal = round2(kcal_g)
-            total_protein = round2(protein_g)
-            total_fat = round2(fat_g)
-            total_carbs = round2(carbs_g)
-            amount_value = ""
-            calories_per_unit = ""
-            protein_per_unit = ""
-            fat_per_unit = ""
-            carbs_per_unit = ""
-        else:
-            total_kcal = round2(amount * kcal_g)
-            total_protein = round2(amount * protein_g)
-            total_fat = round2(amount * fat_g)
-            total_carbs = round2(amount * carbs_g)
-            amount_value = amount
-            calories_per_unit = kcal_g
-            protein_per_unit = protein_g
-            fat_per_unit = fat_g
-            carbs_per_unit = carbs_g
+        total_kcal = round2(amount * kcal_g)
+        total_protein = round2(amount * protein_g)
+        total_fat = round2(amount * fat_g)
+        total_carbs = round2(amount * carbs_g)
 
         meal_type = item.get("daytime", "unknown")
         key_meal = (date_key, meal_type)
@@ -207,14 +188,14 @@ for date_key, content in days_data.items():
                 "Type": item.get("type", ""),
                 "Product": fix_encoding(item.get("name", "Unknown")),
                 "Source": "simple_product",
-                "Amount": amount_value,
+                "Amount": amount,
                 "Unit": item.get("serving", ""),
                 "Portions": item.get("serving_quantity", ""),
-                "Calories/g": calories_per_unit,
+                "Calories/g": kcal_g,
                 "Calories total": total_kcal,
-                "Protein/g": protein_per_unit,
-                "Fat/g": fat_per_unit,
-                "Carbs/g": carbs_per_unit,
+                "Protein/g": protein_g,
+                "Fat/g": fat_g,
+                "Carbs/g": carbs_g,
                 "Protein total": total_protein,
                 "Fat total": total_fat,
                 "Carbs total": total_carbs,
