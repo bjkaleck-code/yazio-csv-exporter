@@ -50,6 +50,7 @@ seca myAnalytics upload:
 4. The dashboard stores the file locally in `C:\Tools\Yazio\seca-data`, runs the seca import, and refreshes the metrics.
 
 Only CSV/TXT uploads are supported right now. PDF parsing is intentionally not implemented yet.
+seca uploads are deduplicated by SHA-256 file hash. Uploading the same file again is detected and skipped. Later exports that overlap older measurements are safe as well: existing measurements are updated only when the new file adds or changes values, otherwise they are counted as already present.
 
 5. After completion, the script will generate the following CSV files:
 

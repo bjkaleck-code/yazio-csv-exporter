@@ -3,7 +3,7 @@
 import { DragEvent, FormEvent, useRef, useState } from "react";
 
 type UploadState = {
-  type: "idle" | "success" | "error" | "loading";
+  type: "idle" | "success" | "duplicate" | "partial" | "error" | "loading";
   message: string;
 };
 
@@ -43,6 +43,22 @@ export function SecaUpload() {
       body: formData,
     });
     const result = await response.json();
+    if (result.status === "duplicate_file") {
+      setState({
+        type: "duplicate",
+        message: result.message ?? "Diese Datei wurde bereits importiert. Es wurden keine Änderungen vorgenommen.",
+      });
+      setFile(null);
+      inputRef.current?.form?.reset();
+      return;
+    }
+    if (result.status === "partial") {
+      setState({
+        type: "partial",
+        message: result.message ?? "Import teilweise erfolgreich.",
+      });
+      return;
+    }
     if (!response.ok || result.status !== "success") {
       setState({
         type: "error",
@@ -52,7 +68,11 @@ export function SecaUpload() {
     }
     setState({
       type: "success",
-      message: result.message ?? "Import erfolgreich.",
+      message:
+        result.message ??
+        `seca Import erfolgreich: ${result.inserted ?? 0} neue Messungen, ${result.updated ?? 0} aktualisiert, ${
+          result.skipped ?? 0
+        } bereits vorhanden.`,
     });
     setFile(null);
     inputRef.current?.form?.reset();

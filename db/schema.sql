@@ -125,6 +125,9 @@ CREATE TABLE IF NOT EXISTS body_composition_measurements (
     fat_torso_kg REAL,
     fat_right_leg_kg REAL,
     fat_left_leg_kg REAL,
+    measurement_hash TEXT,
+    original_file_sha256 TEXT,
+    original_filename TEXT,
     raw_json TEXT,
     imported_at TEXT NOT NULL,
     UNIQUE(source, measured_at)
@@ -132,6 +135,25 @@ CREATE TABLE IF NOT EXISTS body_composition_measurements (
 
 CREATE INDEX IF NOT EXISTS idx_body_composition_date
 ON body_composition_measurements (date);
+
+CREATE TABLE IF NOT EXISTS uploaded_files (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,
+    original_filename TEXT,
+    stored_filename TEXT,
+    source_path TEXT,
+    file_sha256 TEXT NOT NULL,
+    file_size_bytes INTEGER,
+    uploaded_at TEXT NOT NULL,
+    imported_at TEXT,
+    status TEXT NOT NULL,
+    import_run_id INTEGER,
+    details_json TEXT,
+    UNIQUE(source, file_sha256)
+);
+
+CREATE INDEX IF NOT EXISTS idx_uploaded_files_source_uploaded
+ON uploaded_files (source, uploaded_at);
 
 CREATE TABLE IF NOT EXISTS workout_sessions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

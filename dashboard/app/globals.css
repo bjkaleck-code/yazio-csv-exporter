@@ -294,6 +294,11 @@ h1 {
   color: var(--accent);
 }
 
+.upload-message.duplicate,
+.upload-message.partial {
+  color: #f2c94c;
+}
+
 .upload-message.error {
   color: #ff9a9a;
 }

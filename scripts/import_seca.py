@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import json
 import os
 import re
@@ -11,6 +12,7 @@ REPO_DIR = Path(__file__).resolve().parents[1]
 DB_PATH = REPO_DIR / "db" / "fitness_dashboard.sqlite"
 SCHEMA_PATH = REPO_DIR / "db" / "schema.sql"
 SECA_DATA_DIR = Path(os.environ.get("SECA_DATA_DIR", r"C:\Tools\Yazio\seca-data"))
+SECA_IMPORT_FILE = os.environ.get("SECA_IMPORT_FILE")
 
 COMPOSITION_FIELDS = [
     "weight_kg",
@@ -53,6 +55,9 @@ OPTIONAL_COLUMNS = {
     "fat_torso_kg": "REAL",
     "fat_right_leg_kg": "REAL",
     "fat_left_leg_kg": "REAL",
+    "measurement_hash": "TEXT",
+    "original_file_sha256": "TEXT",
+    "original_filename": "TEXT",
 }
 
 
@@ -142,6 +147,7 @@ def utc_now():
 def connect_db():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(DB_PATH)
+    con.row_factory = sqlite3.Row
     with open(SCHEMA_PATH, "r", encoding="utf-8") as schema_file:
         con.executescript(schema_file.read())
     ensure_optional_columns(con)
@@ -156,6 +162,13 @@ def ensure_optional_columns(con):
     for column, column_type in OPTIONAL_COLUMNS.items():
         if column not in columns:
             con.execute(f"ALTER TABLE body_composition_measurements ADD COLUMN {column} {column_type}")
+    con.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_body_composition_measurement_hash
+        ON body_composition_measurements (source, measurement_hash)
+        WHERE measurement_hash IS NOT NULL
+        """
+    )
 
 
 def write_import_run(
@@ -171,7 +184,7 @@ def write_import_run(
     details=None,
     error_message=None,
 ):
-    con.execute(
+    cur = con.execute(
         """
         INSERT INTO import_runs (
             source, status, started_at, finished_at, source_path, source_modified_at,
@@ -195,6 +208,32 @@ def write_import_run(
             error_message,
         ),
     )
+    return cur.lastrowid
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def normalized_number(value):
+    if value is None:
+        return None
+    return round(float(value), 2)
+
+
+def compute_measurement_hash(row):
+    payload = {
+        "source": "seca",
+        "measured_at": row.get("measured_at") or row.get("date"),
+    }
+    for field in COMPOSITION_FIELDS:
+        payload[field] = normalized_number(row.get(field)) if row.get(field) is not None else None
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def normalize_header(value):
@@ -398,12 +437,18 @@ def build_measurements(path):
     rows = read_csv_rows(path)
     if not rows:
         return [], [], {}
+    sha = file_sha256(path)
 
     tableview_measurements = build_tableview_measurements(rows)
     if tableview_measurements:
+        for measurement in tableview_measurements:
+            measurement["original_file_sha256"] = sha
+            measurement["original_filename"] = path.name
+            measurement["measurement_hash"] = compute_measurement_hash(measurement)
         return tableview_measurements, rows, {
             "format": "seca_tableview",
             "recognized_columns": {"Wert/Einheit": "transposed measurements"},
+            "file_sha256": sha,
         }
 
     mapping, normalized = map_headers(rows[0].keys())
@@ -431,38 +476,98 @@ def build_measurements(path):
             measurement[field] = to_float(mapped.get(field))
         if not measurement["measured_at"]:
             measurement["measured_at"] = f"{day}T00:00:00+00:00"
+        measurement["original_file_sha256"] = sha
+        measurement["original_filename"] = path.name
+        measurement["measurement_hash"] = compute_measurement_hash(measurement)
         measurements.append(measurement)
 
-    return measurements, rows, {"recognized_columns": mapping, "normalized_columns": normalized}
+    return measurements, rows, {"recognized_columns": mapping, "normalized_columns": normalized, "file_sha256": sha}
 
 
 def upsert_measurements(con, measurements):
-    field_columns = ", ".join(COMPOSITION_FIELDS)
-    field_placeholders = ", ".join(["?"] * len(COMPOSITION_FIELDS))
-    update_fields = ",\n            ".join(
-        f"{field} = excluded.{field}" for field in ["date", *COMPOSITION_FIELDS, "raw_json", "imported_at"]
-    )
-    con.executemany(
-        f"""
+    stats = {"inserted": 0, "updated": 0, "skipped": 0, "conflicts": []}
+    field_columns = [
+        "measured_at",
+        "date",
+        "source",
+        *COMPOSITION_FIELDS,
+        "measurement_hash",
+        "original_file_sha256",
+        "original_filename",
+        "raw_json",
+        "imported_at",
+    ]
+    insert_sql = f"""
         INSERT INTO body_composition_measurements (
-            measured_at, date, source, {field_columns},
-            raw_json, imported_at
+            {", ".join(field_columns)}
         )
-        VALUES (?, ?, 'seca', {field_placeholders}, ?, ?)
-        ON CONFLICT(source, measured_at) DO UPDATE SET
-            {update_fields}
-        """,
-        [
-            (
-                row["measured_at"],
-                row["date"],
-                *[row[field] for field in COMPOSITION_FIELDS],
-                row["raw_json"],
-                row["imported_at"],
+        VALUES ({", ".join(["?"] * len(field_columns))})
+    """
+
+    for row in measurements:
+        existing = con.execute(
+            """
+            SELECT *
+            FROM body_composition_measurements
+            WHERE source = 'seca'
+              AND (
+                (measured_at IS NOT NULL AND measured_at = ?)
+                OR (measurement_hash IS NOT NULL AND measurement_hash = ?)
+              )
+            ORDER BY measured_at = ? DESC
+            LIMIT 1
+            """,
+            (row["measured_at"], row["measurement_hash"], row["measured_at"]),
+        ).fetchone()
+
+        values = [
+            row["measured_at"],
+            row["date"],
+            "seca",
+            *[row.get(field) for field in COMPOSITION_FIELDS],
+            row["measurement_hash"],
+            row.get("original_file_sha256"),
+            row.get("original_filename"),
+            row["raw_json"],
+            row["imported_at"],
+        ]
+
+        if existing is None:
+            con.execute(insert_sql, values)
+            stats["inserted"] += 1
+            continue
+
+        changed = False
+        updates = {"date": row["date"], "raw_json": row["raw_json"], "imported_at": row["imported_at"]}
+        for field in COMPOSITION_FIELDS:
+            new_value = row.get(field)
+            old_value = existing[field]
+            if new_value is not None and (old_value is None or normalized_number(new_value) != normalized_number(old_value)):
+                updates[field] = new_value
+                changed = True
+        for field in ["measurement_hash", "original_file_sha256", "original_filename"]:
+            if row.get(field) and existing[field] is None:
+                updates[field] = row.get(field)
+
+        if changed:
+            assignments = ", ".join(f"{field} = ?" for field in updates)
+            con.execute(
+                f"UPDATE body_composition_measurements SET {assignments} WHERE id = ?",
+                [*updates.values(), existing["id"]],
             )
-            for row in measurements
-        ],
-    )
+            stats["updated"] += 1
+            if existing["measurement_hash"] and existing["measurement_hash"] != row["measurement_hash"]:
+                stats["conflicts"].append(
+                    {
+                        "measured_at": row["measured_at"],
+                        "old_measurement_hash": existing["measurement_hash"],
+                        "new_measurement_hash": row["measurement_hash"],
+                    }
+                )
+        else:
+            stats["skipped"] += 1
+
+    return stats
 
 
 def sync_body_metrics(con, measurements):
@@ -492,7 +597,11 @@ def main():
             con.commit()
         return
 
-    csv_files = sorted([*SECA_DATA_DIR.glob("*.csv"), *SECA_DATA_DIR.glob("*.txt")])
+    if SECA_IMPORT_FILE:
+        candidate = Path(SECA_IMPORT_FILE)
+        csv_files = [candidate] if candidate.exists() and candidate.suffix.lower() in {".csv", ".txt"} else []
+    else:
+        csv_files = sorted([*SECA_DATA_DIR.glob("*.csv"), *SECA_DATA_DIR.glob("*.txt")])
     if not csv_files:
         print(f"Keine seca CSV/TXT-Dateien gefunden, überspringe seca Import: {SECA_DATA_DIR}")
         with connect_db() as con:
@@ -509,19 +618,24 @@ def main():
     try:
         all_measurements = []
         rows_read = 0
-        details = {"files": []}
+        details = {"files": [], "files_read": 0, "files_failed": 0}
         for path in csv_files:
-            measurements, source_rows, file_details = build_measurements(path)
-            rows_read += len(source_rows)
-            all_measurements.extend(measurements)
-            details["files"].append(
-                {
-                    "path": str(path),
-                    "rows_read": len(source_rows),
-                    "rows_importable": len(measurements),
-                    **file_details,
-                }
-            )
+            try:
+                measurements, source_rows, file_details = build_measurements(path)
+                rows_read += len(source_rows)
+                all_measurements.extend(measurements)
+                details["files_read"] += 1
+                details["files"].append(
+                    {
+                        "path": str(path),
+                        "rows_read": len(source_rows),
+                        "rows_importable": len(measurements),
+                        **file_details,
+                    }
+                )
+            except Exception as exc:
+                details["files_failed"] += 1
+                details["files"].append({"path": str(path), "error": str(exc)})
 
         dates = [row["date"] for row in all_measurements]
         modified_at = max((path.stat().st_mtime for path in csv_files), default=None)
@@ -531,9 +645,15 @@ def main():
             else None
         )
         with connect_db() as con:
+            import_stats = {"inserted": 0, "updated": 0, "skipped": 0, "conflicts": []}
             if all_measurements:
-                upsert_measurements(con, all_measurements)
+                import_stats = upsert_measurements(con, all_measurements)
                 sync_body_metrics(con, all_measurements)
+            details["measurements_read"] = len(all_measurements)
+            details["inserted"] = import_stats["inserted"]
+            details["updated"] = import_stats["updated"]
+            details["skipped"] = import_stats["skipped"]
+            details["conflicts"] = import_stats["conflicts"]
             write_import_run(
                 con,
                 status="success" if all_measurements else "partial",
@@ -543,7 +663,7 @@ def main():
                 data_start_date=min(dates) if dates else None,
                 data_end_date=max(dates) if dates else None,
                 rows_read=rows_read,
-                rows_written=len(all_measurements),
+                rows_written=import_stats["inserted"] + import_stats["updated"],
                 details=details,
                 error_message=None if all_measurements else "Keine importierbaren seca Messungen erkannt.",
             )
@@ -560,7 +680,13 @@ def main():
             con.commit()
         raise
 
-    print(f"seca Messungen importiert/aktualisiert: {len(all_measurements)}")
+    print("seca Import:")
+    print(f"- Dateien gelesen: {details['files_read']}")
+    print(f"- Messungen gelesen: {details.get('measurements_read', len(all_measurements))}")
+    print(f"- neu: {details.get('inserted', 0)}")
+    print(f"- aktualisiert: {details.get('updated', 0)}")
+    print(f"- unverändert übersprungen: {details.get('skipped', 0)}")
+    print(f"- Fehler/ungelesene Dateien: {details['files_failed']}")
 
 
 if __name__ == "__main__":
