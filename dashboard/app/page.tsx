@@ -212,11 +212,13 @@ function CompositionCard({
   field,
   latest,
   delta,
+  deltaBasis,
   helper,
 }: {
   field: string;
   latest: Record<string, any>;
   delta: Record<string, any>;
+  deltaBasis: Record<string, any>;
   helper?: string;
 }) {
   const meta = BODY_LABELS[field];
@@ -232,6 +234,9 @@ function CompositionCard({
       <div className={`trend-pill ${direction}`}>
         {typeof deltaValue === "number" ? formatDelta(deltaValue, meta.suffix) : "kein Vergleich"}
       </div>
+      {typeof deltaValue === "number" && deltaBasis?.[field] ? (
+        <small>vs. {formatDate(deltaBasis[field])}</small>
+      ) : null}
       {helper ? <small>{helper}</small> : null}
       <div className="neutral-scale" aria-hidden="true">
         <i />
@@ -243,6 +248,7 @@ function CompositionCard({
 function BodyComposition({ composition }: { composition: Record<string, any> }) {
   const latest = composition?.latest ?? {};
   const delta = composition?.delta ?? {};
+  const deltaBasis = composition?.delta_basis ?? {};
   const hasComposition = Object.keys(latest).some((key) => hasValue(latest, key));
   if (!hasComposition) {
     return null;
@@ -255,27 +261,39 @@ function BodyComposition({ composition }: { composition: Record<string, any> }) 
         <small>{latest.date ? formatDate(latest.date) : "Datum unbekannt"}</small>
       </div>
       <div className="composition-grid">
-        <CompositionCard field="weight_kg" latest={latest} delta={delta} />
+        <CompositionCard field="weight_kg" latest={latest} delta={delta} deltaBasis={deltaBasis} />
         <CompositionCard
           field="body_fat_percent"
           latest={latest}
           delta={delta}
+          deltaBasis={deltaBasis}
           helper={hasValue(latest, "fat_mass_kg") ? `Fettmasse: ${formatNumber(latest.fat_mass_kg, " kg")}` : undefined}
         />
         <CompositionCard
           field="skeletal_muscle_mass_kg"
           latest={latest}
           delta={delta}
+          deltaBasis={deltaBasis}
           helper={
             hasValue(latest, "skeletal_muscle_mass_percent")
               ? `${formatNumber(latest.skeletal_muscle_mass_percent, " %")}`
               : undefined
           }
         />
-        <CompositionCard field={hasValue(latest, "visceral_fat_l") ? "visceral_fat_l" : "visceral_fat"} latest={latest} delta={delta} />
-        <CompositionCard field={hasValue(latest, "body_water_percent") ? "body_water_percent" : "body_water_l"} latest={latest} delta={delta} />
-        <CompositionCard field="bmi" latest={latest} delta={delta} />
-        <CompositionCard field="basal_metabolic_rate_kcal" latest={latest} delta={delta} />
+        <CompositionCard
+          field={hasValue(latest, "visceral_fat_l") ? "visceral_fat_l" : "visceral_fat"}
+          latest={latest}
+          delta={delta}
+          deltaBasis={deltaBasis}
+        />
+        <CompositionCard
+          field={hasValue(latest, "body_water_percent") ? "body_water_percent" : "body_water_l"}
+          latest={latest}
+          delta={delta}
+          deltaBasis={deltaBasis}
+        />
+        <CompositionCard field="bmi" latest={latest} delta={delta} deltaBasis={deltaBasis} />
+        <CompositionCard field="basal_metabolic_rate_kcal" latest={latest} delta={delta} deltaBasis={deltaBasis} />
       </div>
     </section>
   );

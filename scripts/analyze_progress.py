@@ -37,6 +37,27 @@ COMPOSITION_FIELDS = [
     "fat_right_leg_kg",
     "fat_left_leg_kg",
 ]
+COMPOSITION_SCORE_FIELDS = [
+    "weight_kg",
+    "body_fat_percent",
+    "fat_mass_kg",
+    "muscle_mass_kg",
+    "skeletal_muscle_mass_kg",
+    "skeletal_muscle_mass_percent",
+    "body_water_percent",
+    "body_water_l",
+    "bmi",
+    "visceral_fat",
+    "visceral_fat_l",
+    "basal_metabolic_rate_kcal",
+    "waist_circumference_cm",
+    "waist_hip_ratio",
+    "muscle_right_arm_kg",
+    "muscle_left_arm_kg",
+    "muscle_torso_kg",
+    "muscle_right_leg_kg",
+    "muscle_left_leg_kg",
+]
 
 
 def avg(values):
@@ -151,22 +172,63 @@ def row_to_dict(row, fields):
     return {field: row_value(row, field) for field in fields if field in row.keys()}
 
 
+def composition_score(row):
+    return sum(1 for field in COMPOSITION_SCORE_FIELDS if row_value(row, field) is not None)
+
+
+def measured_at_sort_value(row):
+    return row_value(row, "measured_at") or f"{row_value(row, 'date')}T00:00:00"
+
+
+def consolidate_composition_by_day(rows):
+    best_by_date = {}
+    for row in rows:
+        day = row_value(row, "date")
+        if not day:
+            continue
+        current = best_by_date.get(day)
+        if current is None:
+            best_by_date[day] = row
+            continue
+        candidate_key = (composition_score(row), measured_at_sort_value(row))
+        current_key = (composition_score(current), measured_at_sort_value(current))
+        if candidate_key > current_key:
+            best_by_date[day] = row
+    return [best_by_date[day] for day in sorted(best_by_date)]
+
+
 def serialize_composition(rows):
-    series = [row_to_dict(row, COMPOSITION_FIELDS) for row in rows]
+    consolidated = consolidate_composition_by_day(rows)
+    series = [row_to_dict(row, COMPOSITION_FIELDS) for row in consolidated]
     latest = series[-1] if series else {}
     previous = series[-2] if len(series) >= 2 else {}
     delta = {}
-    if latest and previous:
-        for field, latest_value in latest.items():
-            previous_value = previous.get(field)
-            if isinstance(latest_value, (int, float)) and isinstance(previous_value, (int, float)):
-                delta[field] = round(latest_value - previous_value, 2)
-            elif field not in {"date", "measured_at"}:
+    delta_basis = {}
+    if latest:
+        earlier = series[:-1]
+        for field in COMPOSITION_SCORE_FIELDS:
+            latest_value = latest.get(field)
+            if not isinstance(latest_value, (int, float)):
                 delta[field] = None
+                delta_basis[field] = None
+                continue
+            comparison = None
+            for candidate in reversed(earlier):
+                candidate_value = candidate.get(field)
+                if isinstance(candidate_value, (int, float)):
+                    comparison = candidate
+                    break
+            if comparison:
+                delta[field] = round(latest_value - comparison[field], 2)
+                delta_basis[field] = comparison.get("date")
+            else:
+                delta[field] = None
+                delta_basis[field] = None
     return {
         "latest": latest,
         "previous": previous,
         "delta": delta,
+        "delta_basis": delta_basis,
         "series": series,
     }
 
@@ -218,7 +280,7 @@ def build_series(dates, nutrition, body, health, composition):
     nutrition_by_date = rows_by_date(nutrition)
     body_by_date = rows_by_date(body)
     health_by_date = rows_by_date(health)
-    composition_by_date = latest_rows_by_date(composition)
+    composition_by_date = latest_rows_by_date(consolidate_composition_by_day(composition))
 
     series = []
     for day in dates:
