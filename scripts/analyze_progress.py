@@ -9,6 +9,19 @@ DB_PATH = REPO_DIR / "db" / "fitness_dashboard.sqlite"
 SCHEMA_PATH = REPO_DIR / "db" / "schema.sql"
 OUTPUT_PATH = REPO_DIR / "data" / "latest_metrics.json"
 OAT_MILK_KCAL_PER_100_ML = 46
+HEALTH_DAILY_MIGRATIONS = [
+    ("basal_metabolic_rate_kcal", "REAL"),
+    ("basal_metabolic_rate_source", "TEXT"),
+    ("workout_estimated_active_kcal", "REAL"),
+    ("workout_estimated_active_kcal_source", "TEXT"),
+    ("effective_active_kcal", "REAL"),
+    ("effective_active_kcal_source", "TEXT"),
+]
+WORKOUT_SESSION_MIGRATIONS = [
+    ("estimated_active_kcal", "REAL"),
+    ("estimated_met", "REAL"),
+    ("estimated_kcal_source", "TEXT"),
+]
 COMPOSITION_FIELDS = [
     "measured_at",
     "date",
@@ -76,6 +89,7 @@ def connect_db():
     con.row_factory = sqlite3.Row
     with open(SCHEMA_PATH, "r", encoding="utf-8") as schema_file:
         con.executescript(schema_file.read())
+    run_migrations(con)
     return con
 
 
@@ -85,6 +99,24 @@ def table_exists(con, table_name):
         (table_name,),
     ).fetchone()
     return row is not None
+
+
+def table_columns(con, table_name):
+    if not table_exists(con, table_name):
+        return []
+    return [row[1] for row in con.execute(f"PRAGMA table_info({table_name})")]
+
+
+def ensure_column(con, table_name, column_name, column_definition):
+    if column_name not in table_columns(con, table_name):
+        con.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}")
+
+
+def run_migrations(con):
+    for column_name, column_definition in HEALTH_DAILY_MIGRATIONS:
+        ensure_column(con, "health_daily", column_name, column_definition)
+    for column_name, column_definition in WORKOUT_SESSION_MIGRATIONS:
+        ensure_column(con, "workout_sessions", column_name, column_definition)
 
 
 def fetch_rows(con, table):
@@ -114,7 +146,8 @@ def fetch_workout_sessions(con):
     return con.execute(
         """
         SELECT date, start_time, end_time, duration_minutes, exercise_type, title,
-               active_kcal, distance_km, app_source, source
+               active_kcal, distance_km, app_source, source, estimated_active_kcal,
+               estimated_met, estimated_kcal_source
         FROM workout_sessions
         ORDER BY date, start_time
         """
@@ -271,6 +304,9 @@ def serialize_workouts(rows):
             "distance_km": row["distance_km"],
             "app_source": row["app_source"],
             "source": row["source"],
+            "estimated_active_kcal": row["estimated_active_kcal"],
+            "estimated_met": row["estimated_met"],
+            "estimated_kcal_source": row["estimated_kcal_source"],
         }
         for row in rows
     ]
@@ -296,6 +332,11 @@ def build_series(dates, nutrition, body, health, composition):
         body_fat = row_value(composition_row, "body_fat_percent")
         if body_fat is None:
             body_fat = row_value(health_row, "body_fat_percent")
+        basal_metabolic_rate = row_value(health_row, "basal_metabolic_rate_kcal")
+        basal_metabolic_rate_source = row_value(health_row, "basal_metabolic_rate_source")
+        if basal_metabolic_rate is None:
+            basal_metabolic_rate = row_value(composition_row, "basal_metabolic_rate_kcal")
+            basal_metabolic_rate_source = "seca" if basal_metabolic_rate is not None else None
         series.append(
             {
                 "date": day,
@@ -311,6 +352,10 @@ def build_series(dates, nutrition, body, health, composition):
                 "distance_km": health_row["distance_km"] if health_row else None,
                 "active_kcal": health_row["active_kcal"] if health_row else None,
                 "total_kcal": health_row["total_kcal"] if health_row else None,
+                "workout_estimated_active_kcal": row_value(health_row, "workout_estimated_active_kcal"),
+                "workout_estimated_active_kcal_source": row_value(health_row, "workout_estimated_active_kcal_source"),
+                "effective_active_kcal": row_value(health_row, "effective_active_kcal"),
+                "effective_active_kcal_source": row_value(health_row, "effective_active_kcal_source"),
                 "workout_count": health_row["workout_count"] if health_row else None,
                 "workout_minutes": health_row["workout_minutes"] if health_row else None,
                 "body_fat_percent": body_fat,
@@ -324,7 +369,8 @@ def build_series(dates, nutrition, body, health, composition):
                 "bmi": row_value(composition_row, "bmi"),
                 "visceral_fat": row_value(composition_row, "visceral_fat"),
                 "visceral_fat_l": row_value(composition_row, "visceral_fat_l"),
-                "basal_metabolic_rate_kcal": row_value(composition_row, "basal_metabolic_rate_kcal"),
+                "basal_metabolic_rate_kcal": basal_metabolic_rate,
+                "basal_metabolic_rate_source": basal_metabolic_rate_source,
                 "waist_circumference_cm": row_value(composition_row, "waist_circumference_cm"),
                 "waist_hip_ratio": row_value(composition_row, "waist_hip_ratio"),
                 "muscle_right_arm_kg": row_value(composition_row, "muscle_right_arm_kg"),
@@ -408,6 +454,7 @@ def main():
 
     coffee_oat_milk_ml_7 = sum_values([row["coffee_oat_milk_ml"] for row in latest_body_7]) or 0
     oat_milk_calories_7 = round(coffee_oat_milk_ml_7 * OAT_MILK_KCAL_PER_100_ML / 100, 2)
+    series_data = build_series(all_dates, nutrition, body, health, composition)
 
     metrics = {
         "status": "ok",
@@ -449,9 +496,13 @@ def main():
         },
         "health": {
             "active_kcal_avg_7d": avg([row["active_kcal"] for row in latest_health_7]),
+            "workout_estimated_active_kcal_avg_7d": avg([row_value(row, "workout_estimated_active_kcal") for row in latest_health_7]),
+            "effective_active_kcal_avg_7d": avg([row_value(row, "effective_active_kcal") for row in latest_health_7]),
             "distance_km_avg_7d": avg([row["distance_km"] for row in latest_health_7]),
             "sleep_hours_avg_7d": avg([row["sleep_hours"] for row in latest_health_7]),
-            "body_fat_latest": latest_non_null(build_series(all_dates, nutrition, body, health, composition), "body_fat_percent"),
+            "body_fat_latest": latest_non_null(series_data, "body_fat_percent"),
+            "basal_metabolic_rate_kcal_latest": latest_non_null(series_data, "basal_metabolic_rate_kcal"),
+            "basal_metabolic_rate_source_latest": latest_non_null(series_data, "basal_metabolic_rate_source"),
             "total_kcal_avg_7d": avg([row["total_kcal"] for row in latest_health_7]),
             "total_kcal_reliable": False,
             "total_kcal_note": "Health Connect total_kcal may be incomplete",
@@ -459,7 +510,7 @@ def main():
         "source_status": serialize_import_runs(import_runs),
         "workouts": serialize_workouts(workouts),
         "body_composition": serialize_composition(composition),
-        "series": build_series(all_dates, nutrition, body, health, composition),
+        "series": series_data,
     }
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)

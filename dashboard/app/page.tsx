@@ -104,11 +104,12 @@ function average(rows: DailyRow[], key: string) {
 }
 
 function calculateBasalMetabolicRateFallback(rows: DailyRow[], allRows: DailyRow[]) {
-  const secaBasalMetabolicRate = latestNumber(allRows, "basal_metabolic_rate_kcal");
-  if (secaBasalMetabolicRate !== null) {
+  const importedBasalMetabolicRate = latestRowWithNumber(allRows, "basal_metabolic_rate_kcal");
+  if (importedBasalMetabolicRate) {
+    const source = importedBasalMetabolicRate.basal_metabolic_rate_source === "seca" ? "seca" : "health_connect";
     return {
-      basalMetabolicRate: Math.round(secaBasalMetabolicRate),
-      basalMetabolicRateSource: "seca",
+      basalMetabolicRate: Math.round(importedBasalMetabolicRate.basal_metabolic_rate_kcal),
+      basalMetabolicRateSource: source,
       estimatedHeightCm: null,
     };
   }
@@ -151,12 +152,17 @@ function calculateBasalMetabolicRateFallback(rows: DailyRow[], allRows: DailyRow
 function calculateEstimatedEnergyBalance(rows: DailyRow[], allRows: DailyRow[]) {
   const consumed = sum(rows, "calories");
   const basalFallback = calculateBasalMetabolicRateFallback(rows, allRows);
+  const measuredActiveKcal = sum(rows, "active_kcal");
+  const workoutEstimatedActiveKcal = sum(rows, "workout_estimated_active_kcal");
   if (rows.length === 0 || basalFallback.basalMetabolicRate === null) {
     return {
       consumed,
       basalMetabolicRate: basalFallback.basalMetabolicRate,
       basalMetabolicRateSource: basalFallback.basalMetabolicRateSource,
       estimatedHeightCm: basalFallback.estimatedHeightCm,
+      measuredActiveKcal,
+      workoutEstimatedActiveKcal,
+      effectiveActiveKcal: null,
       estimatedExpenditure: null,
       balance: null,
       fatEquivalent: null,
@@ -168,8 +174,28 @@ function calculateEstimatedEnergyBalance(rows: DailyRow[], allRows: DailyRow[]) 
       typeof row.basal_metabolic_rate_kcal === "number" && !Number.isNaN(row.basal_metabolic_rate_kcal)
         ? row.basal_metabolic_rate_kcal
         : basalFallback.basalMetabolicRate;
-    const active = typeof row.active_kcal === "number" && !Number.isNaN(row.active_kcal) ? row.active_kcal : 0;
+    const measuredActive = typeof row.active_kcal === "number" && !Number.isNaN(row.active_kcal) ? row.active_kcal : 0;
+    const estimatedWorkout =
+      typeof row.workout_estimated_active_kcal === "number" && !Number.isNaN(row.workout_estimated_active_kcal)
+        ? row.workout_estimated_active_kcal
+        : 0;
+    const active =
+      typeof row.effective_active_kcal === "number" && !Number.isNaN(row.effective_active_kcal)
+        ? row.effective_active_kcal
+        : Math.max(measuredActive, estimatedWorkout);
     return total + basal + active;
+  }, 0);
+  const effectiveActiveKcal = rows.reduce((total, row) => {
+    const measuredActive = typeof row.active_kcal === "number" && !Number.isNaN(row.active_kcal) ? row.active_kcal : 0;
+    const estimatedWorkout =
+      typeof row.workout_estimated_active_kcal === "number" && !Number.isNaN(row.workout_estimated_active_kcal)
+        ? row.workout_estimated_active_kcal
+        : 0;
+    const active =
+      typeof row.effective_active_kcal === "number" && !Number.isNaN(row.effective_active_kcal)
+        ? row.effective_active_kcal
+        : Math.max(measuredActive, estimatedWorkout);
+    return total + active;
   }, 0);
   const balance = consumed !== null ? consumed - estimatedExpenditure : null;
 
@@ -178,6 +204,9 @@ function calculateEstimatedEnergyBalance(rows: DailyRow[], allRows: DailyRow[]) 
     basalMetabolicRate: basalFallback.basalMetabolicRate,
     basalMetabolicRateSource: basalFallback.basalMetabolicRateSource,
     estimatedHeightCm: basalFallback.estimatedHeightCm,
+    measuredActiveKcal,
+    workoutEstimatedActiveKcal,
+    effectiveActiveKcal,
     estimatedExpenditure,
     balance,
     fatEquivalent: balance !== null ? balance / FAT_EQUIVALENT_KCAL_PER_KG : null,
@@ -194,16 +223,22 @@ function calculateYazioPlanBalance(rows: DailyRow[]) {
 }
 
 function estimatedExpenditureHint(source: unknown) {
+  if (source === "health_connect") {
+    return "Grundumsatz + aktive kcal-Basis";
+  }
   if (source === "seca") {
-    return "seca-Grundumsatz + aktive kcal";
+    return "Grundumsatz + aktive kcal-Basis";
   }
   if (source === "calculated") {
-    return "berechneter Grundumsatz + aktive kcal";
+    return "Grundumsatz + aktive kcal-Basis";
   }
   return "kein Grundumsatz verfügbar";
 }
 
 function basalMetabolicRateSourceHint(source: unknown) {
+  if (source === "health_connect") {
+    return "aus Health Connect, Watt in kcal/Tag umgerechnet";
+  }
   if (source === "seca") {
     return "aus seca";
   }
@@ -257,6 +292,16 @@ function latestNumber(rows: DailyRow[], key: string) {
     const value = row[key];
     if (typeof value === "number" && !Number.isNaN(value)) {
       return value;
+    }
+  }
+  return null;
+}
+
+function latestRowWithNumber(rows: DailyRow[], key: string) {
+  for (const row of [...rows].reverse()) {
+    const value = row[key];
+    if (typeof value === "number" && !Number.isNaN(value)) {
+      return row;
     }
   }
   return null;
@@ -660,6 +705,12 @@ function WorkoutsPanel({ workouts, selectedRows }: { workouts: DailyRow[]; selec
                 {formatNumber(workout.duration_minutes, " min")}
                 {workout.app_source ? ` · ${workout.app_source}` : ""}
               </small>
+              {typeof workout.estimated_active_kcal === "number" ? (
+                <small>
+                  Schätzung: {formatKcal(workout.estimated_active_kcal)}
+                  {typeof workout.estimated_met === "number" ? ` · MET ${formatNumber(workout.estimated_met)}` : ""}
+                </small>
+              ) : null}
             </div>
           ))}
         </div>
@@ -823,6 +874,30 @@ export default async function Home({ searchParams }: { searchParams?: SearchPara
             hint="im ausgewählten Zeitraum"
           />
           <MetricCard
+            label="Grundumsatz-Basis"
+            value={
+              energyBalance.basalMetabolicRateSource === "calculated" && energyBalance.basalMetabolicRate !== null
+                ? `ca. ${formatKcal(energyBalance.basalMetabolicRate)}`
+                : formatKcal(energyBalance.basalMetabolicRate)
+            }
+            hint={basalMetabolicRateSourceHint(energyBalance.basalMetabolicRateSource)}
+          />
+          <MetricCard
+            label="Gemessene aktive kcal"
+            value={formatKcal(energyBalance.measuredActiveKcal)}
+            hint="aus Health Connect, kann bei Workouts unvollständig sein"
+          />
+          <MetricCard
+            label="Trainingsschätzung"
+            value={formatKcal(energyBalance.workoutEstimatedActiveKcal)}
+            hint="geschätzt aus Minuten, Gewicht und Trainingsart"
+          />
+          <MetricCard
+            label="Aktive kcal genutzt"
+            value={formatKcal(energyBalance.effectiveActiveKcal)}
+            hint="pro Tag höherer Wert aus gemessen und Trainingsschätzung, keine Addition"
+          />
+          <MetricCard
             label="Geschätzter Verbrauch gesamt"
             value={formatKcal(energyBalance.estimatedExpenditure)}
             hint={estimatedExpenditureHint(energyBalance.basalMetabolicRateSource)}
@@ -838,15 +913,6 @@ export default async function Home({ searchParams }: { searchParams?: SearchPara
             hint="Näherung auf Basis 7.700 kcal/kg"
           />
           <MetricCard
-            label="Grundumsatz-Basis"
-            value={
-              energyBalance.basalMetabolicRateSource === "calculated" && energyBalance.basalMetabolicRate !== null
-                ? `ca. ${formatKcal(energyBalance.basalMetabolicRate)}`
-                : formatKcal(energyBalance.basalMetabolicRate)
-            }
-            hint={basalMetabolicRateSourceHint(energyBalance.basalMetabolicRateSource)}
-          />
-          <MetricCard
             label="Yazio-Ziel gesamt"
             value={formatKcal(yazioPlanBalance.goal)}
             hint="Planwert, kein Verbrauch"
@@ -858,10 +924,13 @@ export default async function Home({ searchParams }: { searchParams?: SearchPara
           />
         </div>
         <p className="section-note">
-          Geschätzter Verbrauch aus Grundumsatz und aktiven Kalorien aus Health Connect. Wenn kein seca-Grundumsatz
-          vorhanden ist, wird der Grundumsatz näherungsweise aus Gewicht, BMI, Alter und Geschlecht berechnet. Das ist
-          keine medizinisch exakte Verbrauchsmessung. Yazio-Ziele können bereits ein geplantes Defizit enthalten. Waage
-          und Körperfettwerte können durch Wasser, Glykogen, Kreatin, Verdauung und Training abweichen.
+          Der geschätzte Verbrauch setzt sich aus Grundumsatz und einer aktiven kcal-Basis zusammen. Der Grundumsatz
+          kommt bevorzugt aus Health Connect und wird dort von Watt in kcal/Tag umgerechnet. Wenn Health Connect für
+          Workouts keine plausiblen aktiven Kalorien liefert, wird eine klar gekennzeichnete Trainingsschätzung aus
+          Dauer, Gewicht und Trainingsart genutzt. Pro Tag wird zur Vermeidung von Doppelzählung der höhere Wert aus
+          gemessenen aktiven kcal und Trainingsschätzung verwendet, nicht die Summe. Health Connect total_kcal wird
+          nicht als Gesamtverbrauch genutzt, da dieser Export unvollständig wirken kann. Alle Werte sind Näherungen und
+          keine medizinisch exakte Verbrauchsmessung.
         </p>
       </section>
       <BodyComposition composition={composition} />

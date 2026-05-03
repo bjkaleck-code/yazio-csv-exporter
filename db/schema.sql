@@ -73,6 +73,12 @@ CREATE TABLE IF NOT EXISTS health_daily (
     weight_kg REAL,
     body_fat_percent REAL,
     sleep_hours REAL,
+    basal_metabolic_rate_kcal REAL,
+    basal_metabolic_rate_source TEXT,
+    workout_estimated_active_kcal REAL,
+    workout_estimated_active_kcal_source TEXT,
+    effective_active_kcal REAL,
+    effective_active_kcal_source TEXT,
     source TEXT,
     updated_at TEXT
 );
@@ -168,6 +174,9 @@ CREATE TABLE IF NOT EXISTS workout_sessions (
     active_kcal REAL,
     distance_km REAL,
     app_source TEXT,
+    estimated_active_kcal REAL,
+    estimated_met REAL,
+    estimated_kcal_source TEXT,
     raw_json TEXT,
     imported_at TEXT NOT NULL,
     UNIQUE(source, external_id)
