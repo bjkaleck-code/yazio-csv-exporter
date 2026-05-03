@@ -3,6 +3,7 @@ __pycache__/
 db/*.sqlite
 data/latest_metrics.json
 data/latest_ai_report.json
+data/runtime/
 data/yazio/*.csv
 data/yazio/*.json
 data/health-connect-export/*

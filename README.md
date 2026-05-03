@@ -69,6 +69,27 @@ Close PowerShell and open a new one afterwards, then run:
 
 The exporter writes curated Markdown summaries to `03-areas/health-fitness/` and an optional reduced machine snapshot to `03-areas/health-fitness/imports/latest-health-metrics.json`. It does not export raw Yazio CSVs, Health-Connect databases, seca CSVs, SQLite files, tokens, API keys, or credentials. `SECOND_BRAIN_AUTO_COMMIT=true` creates a local commit in the Second-Brain repo only; it never pushes.
 
+Dashboard starter:
+
+```powershell
+.\scripts\start_dashboard.ps1
+```
+
+The starter automatically runs `daily_run.ps1` only once per local day. The local status file is `data/runtime/last_daily_run.json` and is not committed. To force a fresh import even if today's run already succeeded:
+
+```powershell
+.\scripts\start_dashboard.ps1 -ForceDailyRun
+```
+
+The desktop BAT can stay as:
+
+```bat
+@echo off
+cd /d C:\Tools\Yazio\yazio-csv-exporter
+powershell -NoProfile -ExecutionPolicy Bypass -File ".\scripts\start_dashboard.ps1"
+pause
+```
+
 5. After completion, the script will generate the following CSV files:
 
 nutrition_log.csv
