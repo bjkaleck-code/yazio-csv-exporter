@@ -101,36 +101,71 @@ function average(rows: DailyRow[], key: string) {
   return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
-function calculateEnergyBalance(rows: DailyRow[]) {
+function calculateEstimatedEnergyBalance(rows: DailyRow[], allRows: DailyRow[]) {
   const consumed = sum(rows, "calories");
-  const goal = sum(rows, "energy_goal");
-  const difference = consumed !== null && goal !== null ? consumed - goal : null;
-  const daysWithYazioData = rows.filter(
-    (row) =>
-      (typeof row.calories === "number" && !Number.isNaN(row.calories)) ||
-      (typeof row.energy_goal === "number" && !Number.isNaN(row.energy_goal)),
-  ).length;
+  const fallbackBasalMetabolicRate = latestNumber(allRows, "basal_metabolic_rate_kcal");
+  if (rows.length === 0 || fallbackBasalMetabolicRate === null) {
+    return {
+      consumed,
+      estimatedExpenditure: null,
+      balance: null,
+      fatEquivalent: null,
+    };
+  }
+
+  const estimatedExpenditure = rows.reduce((total, row) => {
+    const basal =
+      typeof row.basal_metabolic_rate_kcal === "number" && !Number.isNaN(row.basal_metabolic_rate_kcal)
+        ? row.basal_metabolic_rate_kcal
+        : fallbackBasalMetabolicRate;
+    const active = typeof row.active_kcal === "number" && !Number.isNaN(row.active_kcal) ? row.active_kcal : 0;
+    return total + basal + active;
+  }, 0);
+  const balance = consumed !== null ? consumed - estimatedExpenditure : null;
+
   return {
     consumed,
-    goal,
-    difference,
-    fatEquivalent: difference !== null ? difference / FAT_EQUIVALENT_KCAL_PER_KG : null,
-    averageDifferencePerDay: difference !== null && daysWithYazioData > 0 ? difference / daysWithYazioData : null,
+    estimatedExpenditure,
+    balance,
+    fatEquivalent: balance !== null ? balance / FAT_EQUIVALENT_KCAL_PER_KG : null,
   };
 }
 
-function energyDifferenceHint(value: number | null) {
+function calculateYazioPlanBalance(rows: DailyRow[]) {
+  const consumed = sum(rows, "calories");
+  const goal = sum(rows, "energy_goal");
+  return {
+    goal,
+    difference: consumed !== null && goal !== null ? consumed - goal : null,
+  };
+}
+
+function estimatedBalanceHint(value: number | null) {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return "nicht berechenbar";
+  }
+  if (value < 0) {
+    return "unter geschätztem Verbrauch im Zeitraum";
+  }
+  if (value > 0) {
+    return "über geschätztem Verbrauch im Zeitraum";
+  }
+  return "auf geschätztem Verbrauch im Zeitraum";
+}
+
+function yazioPlanDifferenceHint(value: number | null) {
   if (typeof value !== "number" || Number.isNaN(value)) {
     return "keine Yazio-Zieldaten im Zeitraum";
   }
   if (value < 0) {
-    return "unter Yazio-Ziel im Zeitraum";
+    return "unter Yazio-Plan im Zeitraum";
   }
   if (value > 0) {
-    return "über Yazio-Ziel im Zeitraum";
+    return "über Yazio-Plan im Zeitraum";
   }
-  return "genau auf Yazio-Ziel im Zeitraum";
+  return "genau auf Yazio-Plan im Zeitraum";
 }
+
 function sum(rows: DailyRow[], key: string) {
   const values = rows
     .map((row) => row[key])
@@ -573,7 +608,8 @@ export default async function Home({ searchParams }: { searchParams?: SearchPara
   const selectedRows = selectRows(series, range, params.from, params.to);
   const workouts = Array.isArray(metrics.workouts) ? metrics.workouts : [];
   const sourceStatus = metrics.source_status ?? {};
-  const energyBalance = calculateEnergyBalance(selectedRows);
+  const energyBalance = calculateEstimatedEnergyBalance(selectedRows, series);
+  const yazioPlanBalance = calculateYazioPlanBalance(selectedRows);
   const composition = metrics.body_composition ?? {};
   const selectedLabel = customRangeActive
     ? "Benutzerdefiniert"
@@ -705,7 +741,7 @@ export default async function Home({ searchParams }: { searchParams?: SearchPara
         <div className="section-heading">
           <div>
             <span>Energiebilanz im Zeitraum</span>
-            <h2>Yazio-Aufnahme vs. Yazio-Ziel</h2>
+            <h2>Aufnahme vs. geschätzter Verbrauch</h2>
           </div>
         </div>
         <div className="metrics-grid">
@@ -715,24 +751,35 @@ export default async function Home({ searchParams }: { searchParams?: SearchPara
             hint="im ausgewählten Zeitraum"
           />
           <MetricCard
-            label="Yazio-Ziel gesamt"
-            value={formatKcal(energyBalance.goal)}
-            hint="Summe der Tagesziele"
+            label="Geschätzter Verbrauch gesamt"
+            value={formatKcal(energyBalance.estimatedExpenditure)}
+            hint="seca-Grundumsatz + aktive kcal"
           />
           <MetricCard
-            label="Differenz zum Yazio-Ziel"
-            value={formatKcal(energyBalance.difference, true)}
-            hint={energyDifferenceHint(energyBalance.difference)}
+            label="Geschätzte Bilanz"
+            value={formatKcal(energyBalance.balance, true)}
+            hint={estimatedBalanceHint(energyBalance.balance)}
           />
           <MetricCard
             label="Rechnerisches Fettäquivalent"
             value={formatFatEquivalent(energyBalance.fatEquivalent)}
             hint="Näherung auf Basis 7.700 kcal/kg"
           />
+          <MetricCard
+            label="Yazio-Ziel gesamt"
+            value={formatKcal(yazioPlanBalance.goal)}
+            hint="Planwert, kein Verbrauch"
+          />
+          <MetricCard
+            label="Abweichung vom Yazio-Plan"
+            value={formatKcal(yazioPlanBalance.difference, true)}
+            hint={yazioPlanDifferenceHint(yazioPlanBalance.difference)}
+          />
         </div>
         <p className="section-note">
-          Rechnerisches Fettäquivalent aus der Differenz zum Yazio-Ziel. Waage und Körperfettwerte können durch Wasser,
-          Glykogen, Kreatin, Verdauung und Training abweichen.
+          Geschätzter Verbrauch aus seca-Grundumsatz und aktiven Kalorien aus Health Connect. Das ist keine medizinisch
+          exakte Verbrauchsmessung. Yazio-Ziele können bereits ein geplantes Defizit enthalten. Waage und Körperfettwerte
+          können durch Wasser, Glykogen, Kreatin, Verdauung und Training abweichen.
         </p>
       </section>
       <BodyComposition composition={composition} />
