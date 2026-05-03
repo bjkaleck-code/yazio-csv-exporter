@@ -52,6 +52,23 @@ seca myAnalytics upload:
 Only CSV/TXT uploads are supported right now. PDF parsing is intentionally not implemented yet.
 seca uploads are deduplicated by SHA-256 file hash. Uploading the same file again is detected and skipped. Later exports that overlap older measurements are safe as well: existing measurements are updated only when the new file adds or changes values, otherwise they are counted as already present.
 
+Second-Brain export:
+
+```powershell
+cd C:\Tools
+git clone https://github.com/bjkaleck-code/secondbrain.git secondbrain
+setx SECOND_BRAIN_REPO "C:\Tools\secondbrain"
+setx SECOND_BRAIN_AUTO_COMMIT "true"
+```
+
+Close PowerShell and open a new one afterwards, then run:
+
+```powershell
+.\scripts\daily_run.ps1
+```
+
+The exporter writes curated Markdown summaries to `03-areas/health-fitness/` and an optional reduced machine snapshot to `03-areas/health-fitness/imports/latest-health-metrics.json`. It does not export raw Yazio CSVs, Health-Connect databases, seca CSVs, SQLite files, tokens, API keys, or credentials. `SECOND_BRAIN_AUTO_COMMIT=true` creates a local commit in the Second-Brain repo only; it never pushes.
+
 5. After completion, the script will generate the following CSV files:
 
 nutrition_log.csv

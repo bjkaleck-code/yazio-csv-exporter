@@ -74,6 +74,7 @@ if ($SecaFiles.Count -gt 0) {
 }
 Invoke-Step "Fortschritt analysieren" @("python", ".\scripts\analyze_progress.py")
 Invoke-Step "AI-Report erzeugen" @("python", ".\scripts\generate_ai_report.py")
+Invoke-Step "Second-Brain-Zusammenfassung exportieren" @("python", ".\scripts\export_second_brain.py")
 
 Write-Host ""
 Write-Host "Taeglicher Lauf erfolgreich abgeschlossen."
