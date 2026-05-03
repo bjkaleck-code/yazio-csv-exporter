@@ -76,3 +76,67 @@ CREATE TABLE IF NOT EXISTS health_daily (
     source TEXT,
     updated_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS import_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,
+    status TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    source_path TEXT,
+    source_modified_at TEXT,
+    data_start_date TEXT,
+    data_end_date TEXT,
+    rows_read INTEGER,
+    rows_written INTEGER,
+    details_json TEXT,
+    error_message TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_import_runs_source_finished
+ON import_runs (source, finished_at);
+
+CREATE TABLE IF NOT EXISTS body_composition_measurements (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    measured_at TEXT,
+    date TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'seca',
+    weight_kg REAL,
+    body_fat_percent REAL,
+    fat_mass_kg REAL,
+    muscle_mass_kg REAL,
+    skeletal_muscle_mass_kg REAL,
+    body_water_percent REAL,
+    body_water_l REAL,
+    bmi REAL,
+    visceral_fat REAL,
+    basal_metabolic_rate_kcal REAL,
+    waist_hip_ratio REAL,
+    raw_json TEXT,
+    imported_at TEXT NOT NULL,
+    UNIQUE(source, measured_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_body_composition_date
+ON body_composition_measurements (date);
+
+CREATE TABLE IF NOT EXISTS workout_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL DEFAULT 'health_connect',
+    external_id TEXT,
+    date TEXT NOT NULL,
+    start_time TEXT,
+    end_time TEXT,
+    duration_minutes REAL,
+    exercise_type INTEGER,
+    title TEXT,
+    active_kcal REAL,
+    distance_km REAL,
+    app_source TEXT,
+    raw_json TEXT,
+    imported_at TEXT NOT NULL,
+    UNIQUE(source, external_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_workout_sessions_date
+ON workout_sessions (date);

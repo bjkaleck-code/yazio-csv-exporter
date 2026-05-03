@@ -47,7 +47,8 @@ body {
 .eyebrow,
 .period span,
 .metric-card span,
-.panel span {
+.panel span,
+.status-card span {
   color: var(--muted);
   display: block;
   font-size: 0.78rem;
@@ -199,6 +200,34 @@ h1 {
   margin: 14px 0 0;
 }
 
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0 0 18px;
+}
+
+.status-card {
+  background: rgba(24, 27, 32, 0.72);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  min-height: 132px;
+  padding: 14px;
+}
+
+.status-card strong {
+  display: block;
+  margin: 8px 0;
+}
+
+.status-card small {
+  color: var(--muted);
+  display: block;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  margin-top: 4px;
+}
+
 .panel .source-line {
   color: var(--muted);
   font-size: 0.95rem;
@@ -208,6 +237,91 @@ h1 {
 .panel ul {
   margin: 14px 0 0;
   padding-left: 20px;
+}
+
+.panel-title-row {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.panel-title-row small {
+  color: var(--muted);
+}
+
+.chart-panel {
+  min-height: 360px;
+}
+
+.body-chart {
+  display: block;
+  height: auto;
+  margin-top: 18px;
+  max-width: 100%;
+  overflow: visible;
+}
+
+.body-chart line {
+  stroke: rgba(168, 176, 189, 0.24);
+  stroke-width: 1;
+}
+
+.body-chart path {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.5;
+}
+
+.body-chart text {
+  fill: var(--muted);
+  font-size: 12px;
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  margin-top: 12px;
+}
+
+.chart-legend span {
+  align-items: center;
+  color: #dbe2ea;
+  display: inline-flex;
+  font-size: 0.92rem;
+  gap: 7px;
+  text-transform: none;
+}
+
+.chart-legend i {
+  border-radius: 999px;
+  display: inline-block;
+  height: 9px;
+  width: 9px;
+}
+
+.workout-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.workout-row {
+  border: 1px solid rgba(168, 176, 189, 0.16);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+
+.workout-row strong,
+.workout-row small {
+  display: block;
+}
+
+.workout-row small {
+  color: var(--muted);
+  margin-top: 4px;
 }
 
 @media (max-width: 820px) {
@@ -221,7 +335,8 @@ h1 {
   }
 
   .metrics-grid,
-  .report-grid {
+  .report-grid,
+  .status-grid {
     grid-template-columns: 1fr;
   }
 }

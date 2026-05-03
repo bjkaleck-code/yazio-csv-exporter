@@ -1,3 +1,5 @@
+import hashlib
+import json
 import os
 import sqlite3
 import zipfile
@@ -39,12 +41,80 @@ def connect_dashboard_db():
     return con
 
 
+def utc_now():
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def path_modified_at(path):
+    if not path or not safe_exists(path):
+        return None
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).replace(microsecond=0).isoformat()
+    except OSError:
+        return None
+
+
+def write_import_run(
+    con,
+    source,
+    status,
+    started_at,
+    source_path=None,
+    source_modified_at_value=None,
+    data_start_date=None,
+    data_end_date=None,
+    rows_read=0,
+    rows_written=0,
+    details=None,
+    error_message=None,
+):
+    con.execute(
+        """
+        INSERT INTO import_runs (
+            source, status, started_at, finished_at, source_path, source_modified_at,
+            data_start_date, data_end_date, rows_read, rows_written, details_json,
+            error_message
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            source,
+            status,
+            started_at,
+            utc_now(),
+            str(source_path) if source_path else None,
+            source_modified_at_value,
+            data_start_date,
+            data_end_date,
+            rows_read,
+            rows_written,
+            json.dumps(details or {}, ensure_ascii=False),
+            error_message,
+        ),
+    )
+
+
 def table_exists(con, table_name):
     row = con.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
         (table_name,),
     ).fetchone()
     return row is not None
+
+
+def table_columns(con, table_name):
+    if not table_exists(con, table_name):
+        return []
+    return [row[1] for row in con.execute(f"PRAGMA table_info({table_name})")]
+
+
+def ms_to_iso(value):
+    if value is None:
+        return None
+    try:
+        return datetime.fromtimestamp(float(value) / 1000, timezone.utc).replace(microsecond=0).isoformat()
+    except (TypeError, ValueError, OSError, OverflowError):
+        return None
 
 
 def find_db_in_dir(directory):
@@ -221,8 +291,84 @@ def import_sleep(con, daily):
         row["sleep_hours"] = round((row["sleep_hours"] or 0) + hours, 2)
 
 
+def detect_app_source_column(con, table_name):
+    candidates = [
+        "app_source",
+        "package_name",
+        "package",
+        "app_package_name",
+        "origin_package_name",
+        "client_id",
+        "data_origin",
+    ]
+    columns = table_columns(con, table_name)
+    for candidate in candidates:
+        if candidate in columns:
+            return candidate
+    return None
+
+
+def stable_session_id(row):
+    parts = [
+        "health_connect",
+        str(row.get("date") or ""),
+        str(row.get("start_time") or ""),
+        str(row.get("end_time") or ""),
+        str(row.get("title") or ""),
+        str(row.get("exercise_type") or ""),
+    ]
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:32]
+
+
+def read_workout_sessions(con):
+    table_name = "exercise_session_record_table"
+    if not table_exists(con, table_name):
+        print(f"Tabelle fehlt, ueberspringe Workout-Sessions: {table_name}")
+        return [], None
+
+    columns = table_columns(con, table_name)
+    wanted = ["local_date", "start_time", "end_time", "exercise_type", "title"]
+    app_source_column = detect_app_source_column(con, table_name)
+    select_columns = [column for column in wanted if column in columns]
+    if app_source_column:
+        select_columns.append(app_source_column)
+    else:
+        print("Health-Connect-App-Quelle in exercise_session_record_table nicht erkennbar; app_source bleibt leer.")
+
+    query = f"SELECT {', '.join(select_columns)} FROM {table_name}"
+    sessions = []
+    for result in con.execute(query):
+        raw = dict(zip(select_columns, result))
+        iso_day = iso_date_from_local_date(raw.get("local_date"))
+        if not iso_day:
+            continue
+        start_time = raw.get("start_time")
+        end_time = raw.get("end_time")
+        duration = None
+        if start_time is not None and end_time is not None:
+            duration = round(max(0, (float(end_time) - float(start_time)) / 60000), 2)
+        session = {
+            "date": iso_day,
+            "start_time": ms_to_iso(start_time),
+            "end_time": ms_to_iso(end_time),
+            "duration_minutes": duration,
+            "exercise_type": raw.get("exercise_type"),
+            "title": raw.get("title"),
+            "active_kcal": None,
+            "distance_km": None,
+            "app_source": raw.get(app_source_column) if app_source_column else None,
+            "raw_json": json.dumps(raw, ensure_ascii=False),
+        }
+        session["external_id"] = stable_session_id(session)
+        sessions.append(session)
+
+    return sessions, app_source_column
+
+
 def read_health_daily(source_db):
     daily = {}
+    sessions = []
+    app_source_column = None
     with sqlite3.connect(source_db) as con:
         add_sum(con, daily, "steps_record_table", "count", "steps", lambda value: int(value or 0))
         add_sum(con, daily, "distance_record_table", "distance", "distance_km", lambda value: float(value or 0) / 1000)
@@ -232,8 +378,9 @@ def read_health_daily(source_db):
         import_latest_daily_value(con, daily, "weight_record_table", "weight", "weight_kg", lambda value: float(value) / 1000)
         import_latest_daily_value(con, daily, "body_fat_record_table", "percentage", "body_fat_percent", float)
         import_sleep(con, daily)
+        sessions, app_source_column = read_workout_sessions(con)
 
-    return [daily[key] for key in sorted(daily)]
+    return [daily[key] for key in sorted(daily)], sessions, app_source_column
 
 
 def upsert_health_daily(con, rows):
@@ -274,6 +421,50 @@ def upsert_health_daily(con, rows):
                 now,
             )
             for row in rows
+        ],
+    )
+
+
+def upsert_workout_sessions(con, sessions):
+    now = utc_now()
+    con.executemany(
+        """
+        INSERT INTO workout_sessions (
+            source, external_id, date, start_time, end_time, duration_minutes,
+            exercise_type, title, active_kcal, distance_km, app_source, raw_json,
+            imported_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(source, external_id) DO UPDATE SET
+            date = excluded.date,
+            start_time = excluded.start_time,
+            end_time = excluded.end_time,
+            duration_minutes = excluded.duration_minutes,
+            exercise_type = excluded.exercise_type,
+            title = excluded.title,
+            active_kcal = excluded.active_kcal,
+            distance_km = excluded.distance_km,
+            app_source = excluded.app_source,
+            raw_json = excluded.raw_json,
+            imported_at = excluded.imported_at
+        """,
+        [
+            (
+                "health_connect",
+                row["external_id"],
+                row["date"],
+                row["start_time"],
+                row["end_time"],
+                row["duration_minutes"],
+                row["exercise_type"],
+                row["title"],
+                row["active_kcal"],
+                row["distance_km"],
+                row["app_source"],
+                row["raw_json"],
+                now,
+            )
+            for row in sessions
         ],
     )
 
@@ -345,6 +536,7 @@ def print_source_status(rows):
 
 
 def main():
+    started_at = utc_now()
     source_db = find_health_db()
     if not source_db:
         print(
@@ -352,21 +544,68 @@ def main():
             "health_connect_export.db direkt im Health-Ordner, unter extracted, "
             "oder in einer ZIP-Datei."
         )
+        with connect_dashboard_db() as con:
+            write_import_run(
+                con,
+                source="health_connect",
+                status="error",
+                started_at=started_at,
+                source_path=HEALTH_EXPORT_DIR,
+                error_message="Keine Health-Connect-Datenbank gefunden.",
+            )
+            con.commit()
         return
 
     print(f"Health-Connect-DB gefunden: {source_db}")
-    rows = read_health_daily(source_db)
-    if not rows:
+    try:
+        rows, sessions, app_source_column = read_health_daily(source_db)
+        dates = [row["date"] for row in rows]
+        with connect_dashboard_db() as con:
+            if rows:
+                upsert_health_daily(con, rows)
+                sync_body_metrics(con, rows)
+            if sessions:
+                upsert_workout_sessions(con, sessions)
+            write_import_run(
+                con,
+                source="health_connect",
+                status="success" if rows or sessions else "partial",
+                started_at=started_at,
+                source_path=source_db,
+                source_modified_at_value=path_modified_at(source_db),
+                data_start_date=min(dates) if dates else None,
+                data_end_date=max(dates) if dates else None,
+                rows_read=len(rows) + len(sessions),
+                rows_written=len(rows) + len(sessions),
+                details={
+                    "daily_rows": len(rows),
+                    "workout_sessions": len(sessions),
+                    "app_source_column": app_source_column,
+                    "history_mode": "upsert_only_no_delete",
+                },
+            )
+            con.commit()
+    except Exception as exc:
+        with connect_dashboard_db() as con:
+            write_import_run(
+                con,
+                source="health_connect",
+                status="error",
+                started_at=started_at,
+                source_path=source_db,
+                source_modified_at_value=path_modified_at(source_db),
+                error_message=str(exc),
+            )
+            con.commit()
+        raise
+
+    if not rows and not sessions:
         print("Health-Connect-DB gelesen, aber keine relevanten Tagesdaten gefunden.")
         return
 
-    with connect_dashboard_db() as con:
-        upsert_health_daily(con, rows)
-        sync_body_metrics(con, rows)
-        con.commit()
-
     print(f"health_daily importiert/aktualisiert: {len(rows)} Tage")
-    print("body_metrics aus Health Connect ergaenzt/aktualisiert.")
+    print(f"workout_sessions importiert/aktualisiert: {len(sessions)} Sessions")
+    print("body_metrics aus Health Connect ergänzt/aktualisiert.")
     print_source_status(rows)
 
 

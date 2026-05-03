@@ -40,6 +40,8 @@ setx YAZIO_PASSWORD "DEIN_PASSWORT"
 
 Close PowerShell and open a new one afterwards. The script first reuses `token.txt` if it exists. If the token is missing or no longer valid, it logs in with `YAZIO_EMAIL` and `YAZIO_PASSWORD`. Only if those variables are missing will it ask interactively.
 
+The local dashboard also imports optional body-composition CSV files from `C:\Tools\Yazio\seca-data`. Override the path with `SECA_DATA_DIR` if needed. Health Connect stays external under `C:\Tools\Yazio\health-data`; these exports are not copied into Git.
+
 5. After completion, the script will generate the following CSV files:
 
 nutrition_log.csv

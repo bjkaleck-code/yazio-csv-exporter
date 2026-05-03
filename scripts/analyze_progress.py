@@ -42,6 +42,48 @@ def fetch_rows(con, table):
     return con.execute(f"SELECT * FROM {table} ORDER BY date").fetchall()
 
 
+def fetch_import_runs(con):
+    if not table_exists(con, "import_runs"):
+        return []
+    return con.execute(
+        """
+        SELECT *
+        FROM import_runs
+        WHERE id IN (
+            SELECT MAX(id)
+            FROM import_runs
+            GROUP BY source
+        )
+        ORDER BY source
+        """
+    ).fetchall()
+
+
+def fetch_workout_sessions(con):
+    if not table_exists(con, "workout_sessions"):
+        return []
+    return con.execute(
+        """
+        SELECT date, start_time, end_time, duration_minutes, exercise_type, title,
+               active_kcal, distance_km, app_source, source
+        FROM workout_sessions
+        ORDER BY date, start_time
+        """
+    ).fetchall()
+
+
+def fetch_body_composition(con):
+    if not table_exists(con, "body_composition_measurements"):
+        return []
+    return con.execute(
+        """
+        SELECT *
+        FROM body_composition_measurements
+        ORDER BY date, measured_at
+        """
+    ).fetchall()
+
+
 def latest_window(rows, days):
     return list(rows[-days:]) if rows else []
 
@@ -64,16 +106,80 @@ def rows_by_date(rows):
     return {row["date"]: row for row in rows}
 
 
-def build_series(dates, nutrition, body, health):
+def latest_rows_by_date(rows, key="date"):
+    by_date = {}
+    for row in rows:
+        by_date[row[key]] = row
+    return by_date
+
+
+def row_value(row, key):
+    return row[key] if row and key in row.keys() else None
+
+
+def serialize_import_runs(rows):
+    result = {}
+    for row in rows:
+        details = {}
+        if row["details_json"]:
+            try:
+                details = json.loads(row["details_json"])
+            except json.JSONDecodeError:
+                details = {}
+        result[row["source"]] = {
+            "status": row["status"],
+            "started_at": row["started_at"],
+            "finished_at": row["finished_at"],
+            "source_path": row["source_path"],
+            "source_modified_at": row["source_modified_at"],
+            "data_start_date": row["data_start_date"],
+            "data_end_date": row["data_end_date"],
+            "rows_read": row["rows_read"],
+            "rows_written": row["rows_written"],
+            "details": details,
+            "error_message": row["error_message"],
+        }
+    return result
+
+
+def serialize_workouts(rows):
+    return [
+        {
+            "date": row["date"],
+            "start_time": row["start_time"],
+            "end_time": row["end_time"],
+            "duration_minutes": row["duration_minutes"],
+            "exercise_type": row["exercise_type"],
+            "title": row["title"],
+            "active_kcal": row["active_kcal"],
+            "distance_km": row["distance_km"],
+            "app_source": row["app_source"],
+            "source": row["source"],
+        }
+        for row in rows
+    ]
+
+
+def build_series(dates, nutrition, body, health, composition):
     nutrition_by_date = rows_by_date(nutrition)
     body_by_date = rows_by_date(body)
     health_by_date = rows_by_date(health)
+    composition_by_date = latest_rows_by_date(composition)
 
     series = []
     for day in dates:
         nutrition_row = nutrition_by_date.get(day)
         body_row = body_by_date.get(day)
         health_row = health_by_date.get(day)
+        composition_row = composition_by_date.get(day)
+        weight = row_value(body_row, "weight")
+        if weight is None:
+            weight = row_value(health_row, "weight_kg")
+        if weight is None:
+            weight = row_value(composition_row, "weight_kg")
+        body_fat = row_value(composition_row, "body_fat_percent")
+        if body_fat is None:
+            body_fat = row_value(health_row, "body_fat_percent")
         series.append(
             {
                 "date": day,
@@ -81,7 +187,8 @@ def build_series(dates, nutrition, body, health):
                 "protein": nutrition_row["protein"] if nutrition_row else None,
                 "energy_goal": nutrition_row["energy_goal"] if nutrition_row else None,
                 "steps": body_row["steps"] if body_row else None,
-                "weight": body_row["weight"] if body_row else None,
+                "weight": weight,
+                "weight_kg": weight,
                 "training": body_row["training"] if body_row else None,
                 "creatine": body_row["creatine"] if body_row else None,
                 "coffee_oat_milk_ml": body_row["coffee_oat_milk_ml"] if body_row else None,
@@ -90,8 +197,17 @@ def build_series(dates, nutrition, body, health):
                 "total_kcal": health_row["total_kcal"] if health_row else None,
                 "workout_count": health_row["workout_count"] if health_row else None,
                 "workout_minutes": health_row["workout_minutes"] if health_row else None,
-                "body_fat_percent": health_row["body_fat_percent"] if health_row else None,
+                "body_fat_percent": body_fat,
                 "sleep_hours": health_row["sleep_hours"] if health_row else None,
+                "fat_mass_kg": row_value(composition_row, "fat_mass_kg"),
+                "muscle_mass_kg": row_value(composition_row, "muscle_mass_kg"),
+                "skeletal_muscle_mass_kg": row_value(composition_row, "skeletal_muscle_mass_kg"),
+                "body_water_percent": row_value(composition_row, "body_water_percent"),
+                "body_water_l": row_value(composition_row, "body_water_l"),
+                "bmi": row_value(composition_row, "bmi"),
+                "visceral_fat": row_value(composition_row, "visceral_fat"),
+                "basal_metabolic_rate_kcal": row_value(composition_row, "basal_metabolic_rate_kcal"),
+                "waist_hip_ratio": row_value(composition_row, "waist_hip_ratio"),
             }
         )
     return series
@@ -104,11 +220,15 @@ def main():
         nutrition = fetch_rows(con, "daily_nutrition")
         body = fetch_rows(con, "body_metrics")
         health = fetch_rows(con, "health_daily") if table_exists(con, "health_daily") else []
+        composition = fetch_body_composition(con)
+        import_runs = fetch_import_runs(con)
+        workouts = fetch_workout_sessions(con)
 
     all_dates = sorted(
         {row["date"] for row in nutrition}
         | {row["date"] for row in body}
         | {row["date"] for row in health}
+        | {row["date"] for row in composition}
     )
     if not all_dates:
         metrics = {
@@ -119,6 +239,8 @@ def main():
                 "total_kcal_reliable": False,
                 "total_kcal_note": "Health Connect total_kcal may be incomplete",
             },
+            "source_status": serialize_import_runs(import_runs),
+            "workouts": serialize_workouts(workouts),
             "series": [],
         }
         OUTPUT_PATH.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
@@ -199,12 +321,14 @@ def main():
             "active_kcal_avg_7d": avg([row["active_kcal"] for row in latest_health_7]),
             "distance_km_avg_7d": avg([row["distance_km"] for row in latest_health_7]),
             "sleep_hours_avg_7d": avg([row["sleep_hours"] for row in latest_health_7]),
-            "body_fat_latest": latest_non_null(health, "body_fat_percent"),
+            "body_fat_latest": latest_non_null(build_series(all_dates, nutrition, body, health, composition), "body_fat_percent"),
             "total_kcal_avg_7d": avg([row["total_kcal"] for row in latest_health_7]),
             "total_kcal_reliable": False,
             "total_kcal_note": "Health Connect total_kcal may be incomplete",
         },
-        "series": build_series(all_dates, nutrition, body, health),
+        "source_status": serialize_import_runs(import_runs),
+        "workouts": serialize_workouts(workouts),
+        "series": build_series(all_dates, nutrition, body, health, composition),
     }
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)

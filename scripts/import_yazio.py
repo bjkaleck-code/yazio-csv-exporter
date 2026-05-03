@@ -1,5 +1,7 @@
 import csv
+import json
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -32,6 +34,58 @@ def connect_db():
     with open(SCHEMA_PATH, "r", encoding="utf-8") as schema_file:
         con.executescript(schema_file.read())
     return con
+
+
+def utc_now():
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def source_modified_at(paths):
+    existing = [path for path in paths if path.exists()]
+    if not existing:
+        return None
+    latest = max(path.stat().st_mtime for path in existing)
+    return datetime.fromtimestamp(latest, timezone.utc).replace(microsecond=0).isoformat()
+
+
+def write_import_run(
+    con,
+    source,
+    status,
+    started_at,
+    source_path=None,
+    source_modified_at_value=None,
+    data_start_date=None,
+    data_end_date=None,
+    rows_read=0,
+    rows_written=0,
+    details=None,
+    error_message=None,
+):
+    con.execute(
+        """
+        INSERT INTO import_runs (
+            source, status, started_at, finished_at, source_path, source_modified_at,
+            data_start_date, data_end_date, rows_read, rows_written, details_json,
+            error_message
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            source,
+            status,
+            started_at,
+            utc_now(),
+            str(source_path) if source_path else None,
+            source_modified_at_value,
+            data_start_date,
+            data_end_date,
+            rows_read,
+            rows_written,
+            json.dumps(details or {}, ensure_ascii=False),
+            error_message,
+        ),
+    )
 
 
 def resolve_csv_dir():
@@ -149,24 +203,60 @@ def import_entries(con, rows):
 
 
 def main():
+    started_at = utc_now()
     csv_dir = resolve_csv_dir()
     daily_path = csv_dir / CSV_FILES["daily"]
     meal_path = csv_dir / CSV_FILES["meal"]
     nutrition_path = csv_dir / CSV_FILES["nutrition"]
     diagnostics_path = csv_dir / CSV_FILES["diagnostics"]
+    source_paths = [daily_path, meal_path, nutrition_path, diagnostics_path]
 
     if diagnostics_path.exists():
         print(f"Diagnostik-CSV gefunden: {diagnostics_path}")
 
-    with connect_db() as con:
-        daily = read_csv(daily_path)
-        meals = read_csv(meal_path)
-        entries = read_csv(nutrition_path)
+    try:
+        with connect_db() as con:
+            daily = read_csv(daily_path)
+            meals = read_csv(meal_path)
+            entries = read_csv(nutrition_path)
 
-        daily_count, daily_start, daily_end = import_daily(con, daily)
-        meal_count, meal_start, meal_end = import_meals(con, meals)
-        entry_count, entry_start, entry_end = import_entries(con, entries)
-        con.commit()
+            daily_count, daily_start, daily_end = import_daily(con, daily)
+            meal_count, meal_start, meal_end = import_meals(con, meals)
+            entry_count, entry_start, entry_end = import_entries(con, entries)
+            starts = [value for value in [daily_start, meal_start, entry_start] if value]
+            ends = [value for value in [daily_end, meal_end, entry_end] if value]
+            write_import_run(
+                con,
+                source="yazio",
+                status="success",
+                started_at=started_at,
+                source_path=csv_dir,
+                source_modified_at_value=source_modified_at(source_paths),
+                data_start_date=min(starts) if starts else None,
+                data_end_date=max(ends) if ends else None,
+                rows_read=len(daily) + len(meals) + len(entries),
+                rows_written=daily_count + meal_count + entry_count,
+                details={
+                    "daily_rows": daily_count,
+                    "meal_rows": meal_count,
+                    "nutrition_rows": entry_count,
+                    "diagnostics_found": diagnostics_path.exists(),
+                },
+            )
+            con.commit()
+    except Exception as exc:
+        with connect_db() as con:
+            write_import_run(
+                con,
+                source="yazio",
+                status="error",
+                started_at=started_at,
+                source_path=csv_dir,
+                source_modified_at_value=source_modified_at(source_paths),
+                error_message=str(exc),
+            )
+            con.commit()
+        raise
 
     print(f"SQLite bereit: {DB_PATH}")
     print(f"daily_nutrition: {daily_count} Zeilen ({daily_start} bis {daily_end})")

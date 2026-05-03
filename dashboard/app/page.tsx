@@ -69,6 +69,10 @@ function sum(rows: DailyRow[], key: string) {
   return values.reduce((total, value) => total + value, 0);
 }
 
+function hasNumber(rows: DailyRow[], key: string) {
+  return rows.some((row) => typeof row[key] === "number" && !Number.isNaN(row[key]));
+}
+
 function latestNumber(rows: DailyRow[], key: string) {
   for (const row of [...rows].reverse()) {
     const value = row[key];
@@ -123,6 +127,40 @@ function sourceLabel(report: Record<string, any>) {
   return "n/a";
 }
 
+function sourceName(source: string) {
+  const names: Record<string, string> = {
+    yazio: "Yazio",
+    health_connect: "Health Connect",
+    seca: "seca",
+    workout_csv: "Training/CleverFit",
+  };
+  return names[source] ?? source;
+}
+
+function sourceStatusText(status: unknown) {
+  if (status === "success") {
+    return "importiert";
+  }
+  if (status === "partial") {
+    return "teilweise / übersprungen";
+  }
+  if (status === "error") {
+    return "Fehler";
+  }
+  return "noch nicht importiert";
+}
+
+function formatWorkoutTime(value: unknown) {
+  if (typeof value !== "string" || !value) {
+    return "";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return new Intl.DateTimeFormat("de-DE", { timeStyle: "short" }).format(date);
+}
+
 function MetricCard({
   label,
   value,
@@ -141,6 +179,152 @@ function MetricCard({
   );
 }
 
+function DataStatus({ sourceStatus }: { sourceStatus: Record<string, any> }) {
+  const sources = ["yazio", "health_connect", "seca", "workout_csv"];
+  return (
+    <section className="status-grid" aria-label="Datenstand">
+      {sources.map((source) => {
+        const status = sourceStatus?.[source];
+        return (
+          <article className="status-card" key={source}>
+            <span>{sourceName(source)}</span>
+            {status ? (
+              <>
+                <strong>{sourceStatusText(status.status)}</strong>
+                <small>Zuletzt: {formatDateTime(status.finished_at)}</small>
+                {status.source_modified_at ? (
+                  <small>Quelle geändert: {formatDateTime(status.source_modified_at)}</small>
+                ) : null}
+                {status.data_start_date || status.data_end_date ? (
+                  <small>
+                    Daten: {formatDate(status.data_start_date)} bis {formatDate(status.data_end_date)}
+                  </small>
+                ) : (
+                  <small>keine Daten</small>
+                )}
+              </>
+            ) : (
+              <>
+                <strong>noch nicht importiert</strong>
+                <small>keine Daten</small>
+              </>
+            )}
+          </article>
+        );
+      })}
+    </section>
+  );
+}
+
+function BodyChart({ rows }: { rows: DailyRow[] }) {
+  const lines = [
+    { key: "weight_kg", label: "Gewicht", color: "#58d68d", suffix: " kg" },
+    { key: "body_fat_percent", label: "Körperfett", color: "#6bb8ff", suffix: " %" },
+    { key: "muscle_mass_kg", label: "Muskelmasse", color: "#f2c94c", suffix: " kg" },
+    { key: "skeletal_muscle_mass_kg", label: "Skelettmuskelmasse", color: "#d6f26b", suffix: " kg" },
+    { key: "fat_mass_kg", label: "Fettmasse", color: "#ff8f70", suffix: " kg" },
+    { key: "body_water_percent", label: "Körperwasser", color: "#9bdbff", suffix: " %" },
+    { key: "bmi", label: "BMI", color: "#c7a8ff", suffix: "" },
+    { key: "visceral_fat", label: "Viszerales Fett", color: "#ffb86b", suffix: "" },
+  ].filter((line) => hasNumber(rows, line.key));
+
+  if (lines.length === 0) {
+    return (
+      <article className="panel wide">
+        <span>Körperwerte Verlauf</span>
+        <p>Noch keine Körperwerte im ausgewählten Zeitraum.</p>
+      </article>
+    );
+  }
+
+  const width = 900;
+  const height = 280;
+  const padding = { top: 24, right: 24, bottom: 34, left: 46 };
+  const values = rows.flatMap((row) =>
+    lines
+      .map((line) => row[line.key])
+      .filter((value) => typeof value === "number" && !Number.isNaN(value)),
+  );
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const spread = max - min || 1;
+  const xFor = (index: number) =>
+    padding.left + (index / Math.max(rows.length - 1, 1)) * (width - padding.left - padding.right);
+  const yFor = (value: number) =>
+    padding.top + ((max - value) / spread) * (height - padding.top - padding.bottom);
+
+  return (
+    <article className="panel wide chart-panel">
+      <div className="panel-title-row">
+        <span>Körperwerte Verlauf</span>
+        <small>{rows.length} Tage im Zeitraum</small>
+      </div>
+      <svg className="body-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Körperwerte Verlauf">
+        <line x1={padding.left} x2={width - padding.right} y1={height - padding.bottom} y2={height - padding.bottom} />
+        <line x1={padding.left} x2={padding.left} y1={padding.top} y2={height - padding.bottom} />
+        <text x={padding.left} y={18}>{formatNumber(max)}</text>
+        <text x={padding.left} y={height - 10}>{formatNumber(min)}</text>
+        {rows.map((row, index) => (
+          <text key={row.date} x={xFor(index)} y={height - 8} textAnchor={index === 0 ? "start" : "middle"}>
+            {index === 0 || index === rows.length - 1 ? formatDate(row.date).replace("2026", "") : ""}
+          </text>
+        ))}
+        {lines.map((line) => {
+          const points = rows
+            .map((row, index) => ({ x: xFor(index), y: yFor(row[line.key]), value: row[line.key] }))
+            .filter((point) => typeof point.value === "number" && !Number.isNaN(point.value));
+          const path = points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ");
+          return (
+            <g key={line.key}>
+              <path d={path} stroke={line.color} />
+              {points.map((point, index) => (
+                <circle cx={point.x} cy={point.y} fill={line.color} key={`${line.key}-${index}`} r="3" />
+              ))}
+            </g>
+          );
+        })}
+      </svg>
+      <div className="chart-legend">
+        {lines.map((line) => (
+          <span key={line.key}>
+            <i style={{ background: line.color }} />
+            {line.label}
+          </span>
+        ))}
+      </div>
+    </article>
+  );
+}
+
+function WorkoutsPanel({ workouts, selectedRows }: { workouts: DailyRow[]; selectedRows: DailyRow[] }) {
+  const selectedDates = new Set(selectedRows.map((row) => row.date));
+  const inRange = workouts.filter((workout) => selectedDates.has(workout.date));
+  const rows = (inRange.length > 0 ? inRange : workouts).slice(-5).reverse();
+
+  return (
+    <article className="panel wide">
+      <span>Letzte Trainings</span>
+      {rows.length > 0 ? (
+        <div className="workout-list">
+          {rows.map((workout, index) => (
+            <div className="workout-row" key={`${workout.date}-${workout.start_time}-${index}`}>
+              <strong>{workout.title || `Training ${workout.exercise_type ?? ""}`}</strong>
+              <small>
+                {formatDate(workout.date)}
+                {formatWorkoutTime(workout.start_time) ? `, ${formatWorkoutTime(workout.start_time)}` : ""} ·{" "}
+                {formatNumber(workout.duration_minutes, " min")}
+                {workout.app_source ? ` · ${workout.app_source}` : ""}
+              </small>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p>Noch keine Trainingssessions importiert.</p>
+      )}
+    </article>
+  );
+}
+
 export default async function Home({ searchParams }: { searchParams?: SearchParams }) {
   const params = await Promise.resolve(searchParams ?? {});
   const range = normalizeRange(params.range);
@@ -149,6 +333,8 @@ export default async function Home({ searchParams }: { searchParams?: SearchPara
   const risks = Array.isArray(report.risk_flags) ? report.risk_flags : [];
   const series = Array.isArray(metrics.series) ? metrics.series : [];
   const selectedRows = selectRows(series, range, params.from, params.to);
+  const workouts = Array.isArray(metrics.workouts) ? metrics.workouts : [];
+  const sourceStatus = metrics.source_status ?? {};
   const selectedLabel = customRangeActive
     ? "Benutzerdefiniert"
     : RANGE_OPTIONS.find((option) => option.value === range)?.label ?? "7 Tage";
@@ -161,6 +347,11 @@ export default async function Home({ searchParams }: { searchParams?: SearchPara
 
   const bodyFatInRange = latestNumber(selectedRows, "body_fat_percent");
   const bodyFat = bodyFatInRange ?? latestNumber(series, "body_fat_percent");
+  const muscleMass =
+    latestNumber(selectedRows, "muscle_mass_kg") ??
+    latestNumber(selectedRows, "skeletal_muscle_mass_kg") ??
+    latestNumber(series, "muscle_mass_kg") ??
+    latestNumber(series, "skeletal_muscle_mass_kg");
 
   const periodStart = selectedRows[0]?.date ?? (isIsoDate(params.from) ? params.from : metrics.period?.start) ?? "n/a";
   const periodEnd =
@@ -210,6 +401,8 @@ export default async function Home({ searchParams }: { searchParams?: SearchPara
         </form>
       </section>
 
+      <DataStatus sourceStatus={sourceStatus} />
+
       <section className="metrics-grid" aria-label="Kennzahlen">
         <MetricCard
           label="Gewicht aktuell"
@@ -257,6 +450,18 @@ export default async function Home({ searchParams }: { searchParams?: SearchPara
           value={formatNumber(bodyFat, " %")}
           hint={bodyFatInRange === null && bodyFat !== null ? "letzter verfügbarer Wert" : undefined}
         />
+        {muscleMass !== null ? (
+          <MetricCard
+            label="Muskelmasse aktuell"
+            value={formatNumber(muscleMass, " kg")}
+            hint="aus seca, falls vorhanden"
+          />
+        ) : null}
+      </section>
+
+      <section className="report-grid">
+        <BodyChart rows={selectedRows} />
+        <WorkoutsPanel workouts={workouts} selectedRows={selectedRows} />
       </section>
 
       <section className="report-grid">
