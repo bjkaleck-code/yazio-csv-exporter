@@ -348,7 +348,7 @@ with open(DIAGNOSTICS_CSV, "w", newline="", encoding="utf-8") as f:
             ]
         )
 
-print("✅ CSV files created:")
+print("CSV files created:")
 print(f" - {DETAIL_CSV}")
 print(f" - {MEAL_SUMMARY_CSV}")
 print(f" - {DAILY_SUMMARY_CSV}")

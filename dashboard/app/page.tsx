@@ -12,6 +12,8 @@ type SearchParams = Promise<{ range?: string; from?: string; to?: string }> | {
 type DailyRow = Record<string, any>;
 
 const FAT_EQUIVALENT_KCAL_PER_KG = 7700;
+const BASAL_METABOLIC_RATE_BIRTH_YEAR = 1987;
+const BASAL_METABOLIC_RATE_SEX: "male" | "female" = "male";
 
 const RANGE_OPTIONS = [
   { label: "7 Tage", value: "7" },
@@ -101,12 +103,60 @@ function average(rows: DailyRow[], key: string) {
   return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
+function calculateBasalMetabolicRateFallback(rows: DailyRow[], allRows: DailyRow[]) {
+  const secaBasalMetabolicRate = latestNumber(allRows, "basal_metabolic_rate_kcal");
+  if (secaBasalMetabolicRate !== null) {
+    return {
+      basalMetabolicRate: Math.round(secaBasalMetabolicRate),
+      basalMetabolicRateSource: "seca",
+      estimatedHeightCm: null,
+    };
+  }
+
+  const weightKg =
+    latestNumber(rows, "weight_kg") ??
+    latestNumber(rows, "weight") ??
+    latestNumber(allRows, "weight_kg") ??
+    latestNumber(allRows, "weight");
+  const bmi = latestNumber(rows, "bmi") ?? latestNumber(allRows, "bmi");
+  if (weightKg === null || bmi === null || bmi <= 0) {
+    return {
+      basalMetabolicRate: null,
+      basalMetabolicRateSource: null,
+      estimatedHeightCm: null,
+    };
+  }
+
+  const heightMeters = Math.sqrt(weightKg / bmi);
+  const heightCm = heightMeters * 100;
+  if (heightCm < 120 || heightCm > 230) {
+    return {
+      basalMetabolicRate: null,
+      basalMetabolicRateSource: null,
+      estimatedHeightCm: null,
+    };
+  }
+
+  const age = new Date().getFullYear() - BASAL_METABOLIC_RATE_BIRTH_YEAR;
+  const sexAdjustment = BASAL_METABOLIC_RATE_SEX === "female" ? -161 : 5;
+  const basalMetabolicRate = Math.round(10 * weightKg + 6.25 * heightCm - 5 * age + sexAdjustment);
+
+  return {
+    basalMetabolicRate,
+    basalMetabolicRateSource: "calculated",
+    estimatedHeightCm: Math.round(heightCm),
+  };
+}
+
 function calculateEstimatedEnergyBalance(rows: DailyRow[], allRows: DailyRow[]) {
   const consumed = sum(rows, "calories");
-  const fallbackBasalMetabolicRate = latestNumber(allRows, "basal_metabolic_rate_kcal");
-  if (rows.length === 0 || fallbackBasalMetabolicRate === null) {
+  const basalFallback = calculateBasalMetabolicRateFallback(rows, allRows);
+  if (rows.length === 0 || basalFallback.basalMetabolicRate === null) {
     return {
       consumed,
+      basalMetabolicRate: basalFallback.basalMetabolicRate,
+      basalMetabolicRateSource: basalFallback.basalMetabolicRateSource,
+      estimatedHeightCm: basalFallback.estimatedHeightCm,
       estimatedExpenditure: null,
       balance: null,
       fatEquivalent: null,
@@ -117,7 +167,7 @@ function calculateEstimatedEnergyBalance(rows: DailyRow[], allRows: DailyRow[]) 
     const basal =
       typeof row.basal_metabolic_rate_kcal === "number" && !Number.isNaN(row.basal_metabolic_rate_kcal)
         ? row.basal_metabolic_rate_kcal
-        : fallbackBasalMetabolicRate;
+        : basalFallback.basalMetabolicRate;
     const active = typeof row.active_kcal === "number" && !Number.isNaN(row.active_kcal) ? row.active_kcal : 0;
     return total + basal + active;
   }, 0);
@@ -125,6 +175,9 @@ function calculateEstimatedEnergyBalance(rows: DailyRow[], allRows: DailyRow[]) 
 
   return {
     consumed,
+    basalMetabolicRate: basalFallback.basalMetabolicRate,
+    basalMetabolicRateSource: basalFallback.basalMetabolicRateSource,
+    estimatedHeightCm: basalFallback.estimatedHeightCm,
     estimatedExpenditure,
     balance,
     fatEquivalent: balance !== null ? balance / FAT_EQUIVALENT_KCAL_PER_KG : null,
@@ -140,6 +193,25 @@ function calculateYazioPlanBalance(rows: DailyRow[]) {
   };
 }
 
+function estimatedExpenditureHint(source: unknown) {
+  if (source === "seca") {
+    return "seca-Grundumsatz + aktive kcal";
+  }
+  if (source === "calculated") {
+    return "berechneter Grundumsatz + aktive kcal";
+  }
+  return "kein Grundumsatz verfügbar";
+}
+
+function basalMetabolicRateSourceHint(source: unknown) {
+  if (source === "seca") {
+    return "aus seca";
+  }
+  if (source === "calculated") {
+    return "berechnet aus Gewicht und BMI";
+  }
+  return "keine plausible Basis";
+}
 function estimatedBalanceHint(value: number | null) {
   if (typeof value !== "number" || Number.isNaN(value)) {
     return "nicht berechenbar";
@@ -753,7 +825,7 @@ export default async function Home({ searchParams }: { searchParams?: SearchPara
           <MetricCard
             label="Geschätzter Verbrauch gesamt"
             value={formatKcal(energyBalance.estimatedExpenditure)}
-            hint="seca-Grundumsatz + aktive kcal"
+            hint={estimatedExpenditureHint(energyBalance.basalMetabolicRateSource)}
           />
           <MetricCard
             label="Geschätzte Bilanz"
@@ -764,6 +836,15 @@ export default async function Home({ searchParams }: { searchParams?: SearchPara
             label="Rechnerisches Fettäquivalent"
             value={formatFatEquivalent(energyBalance.fatEquivalent)}
             hint="Näherung auf Basis 7.700 kcal/kg"
+          />
+          <MetricCard
+            label="Grundumsatz-Basis"
+            value={
+              energyBalance.basalMetabolicRateSource === "calculated" && energyBalance.basalMetabolicRate !== null
+                ? `ca. ${formatKcal(energyBalance.basalMetabolicRate)}`
+                : formatKcal(energyBalance.basalMetabolicRate)
+            }
+            hint={basalMetabolicRateSourceHint(energyBalance.basalMetabolicRateSource)}
           />
           <MetricCard
             label="Yazio-Ziel gesamt"
@@ -777,9 +858,10 @@ export default async function Home({ searchParams }: { searchParams?: SearchPara
           />
         </div>
         <p className="section-note">
-          Geschätzter Verbrauch aus seca-Grundumsatz und aktiven Kalorien aus Health Connect. Das ist keine medizinisch
-          exakte Verbrauchsmessung. Yazio-Ziele können bereits ein geplantes Defizit enthalten. Waage und Körperfettwerte
-          können durch Wasser, Glykogen, Kreatin, Verdauung und Training abweichen.
+          Geschätzter Verbrauch aus Grundumsatz und aktiven Kalorien aus Health Connect. Wenn kein seca-Grundumsatz
+          vorhanden ist, wird der Grundumsatz näherungsweise aus Gewicht, BMI, Alter und Geschlecht berechnet. Das ist
+          keine medizinisch exakte Verbrauchsmessung. Yazio-Ziele können bereits ein geplantes Defizit enthalten. Waage
+          und Körperfettwerte können durch Wasser, Glykogen, Kreatin, Verdauung und Training abweichen.
         </p>
       </section>
       <BodyComposition composition={composition} />
