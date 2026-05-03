@@ -99,6 +99,17 @@ meal_summary.csv
 daily_summary.csv
 
 ---
+## Dashboard-Kennzahlen
+
+Die Energiebilanz im Dashboard bezieht sich bewusst auf Yazio-Aufnahme vs. Yazio-Ziel, nicht auf echten Gesamtverbrauch, Grundumsatz, TDEE oder Health-Connect-`total_kcal`.
+
+- Kalorien aufgenommen gesamt = Summe der getrackten Yazio-Kalorien im gewählten Zeitraum.
+- Yazio-Ziel gesamt = Summe der Yazio-Tagesziele im gewählten Zeitraum.
+- Differenz zum Yazio-Ziel = Aufnahme minus Ziel. Negative Werte liegen unter dem Yazio-Ziel, positive Werte darüber.
+- Rechnerisches Fettäquivalent = Differenz / 7.700 kcal pro kg.
+
+Das Fettäquivalent ist nur eine rechnerische Näherung und keine exakte Waagenprognose. Waage und Körperfettwerte können durch Wasser, Glykogen, Kreatin, Verdauung und Training abweichen.
+---
 
 ❗ Limitations
 

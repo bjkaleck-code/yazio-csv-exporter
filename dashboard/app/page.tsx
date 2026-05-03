@@ -11,6 +11,8 @@ type SearchParams = Promise<{ range?: string; from?: string; to?: string }> | {
 };
 type DailyRow = Record<string, any>;
 
+const FAT_EQUIVALENT_KCAL_PER_KG = 7700;
+
 const RANGE_OPTIONS = [
   { label: "7 Tage", value: "7" },
   { label: "14 Tage", value: "14" },
@@ -41,6 +43,21 @@ function formatNumber(value: unknown, suffix = "") {
   return `${new Intl.NumberFormat("de-DE", { maximumFractionDigits: 1 }).format(value)}${suffix}`;
 }
 
+function formatKcal(value: unknown, signed = false) {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return "n/a";
+  }
+  const sign = signed && value > 0 ? "+" : "";
+  return `${sign}${new Intl.NumberFormat("de-DE", { maximumFractionDigits: 0 }).format(Math.round(value))} kcal`;
+}
+
+function formatFatEquivalent(value: unknown) {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return "n/a";
+  }
+  const sign = value > 0 ? "+" : "";
+  return `${sign}${new Intl.NumberFormat("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value)} kg`;
+}
 function formatDelta(value: unknown, suffix = "") {
   if (typeof value !== "number" || Number.isNaN(value)) {
     return "n/a";
@@ -84,6 +101,36 @@ function average(rows: DailyRow[], key: string) {
   return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
+function calculateEnergyBalance(rows: DailyRow[]) {
+  const consumed = sum(rows, "calories");
+  const goal = sum(rows, "energy_goal");
+  const difference = consumed !== null && goal !== null ? consumed - goal : null;
+  const daysWithYazioData = rows.filter(
+    (row) =>
+      (typeof row.calories === "number" && !Number.isNaN(row.calories)) ||
+      (typeof row.energy_goal === "number" && !Number.isNaN(row.energy_goal)),
+  ).length;
+  return {
+    consumed,
+    goal,
+    difference,
+    fatEquivalent: difference !== null ? difference / FAT_EQUIVALENT_KCAL_PER_KG : null,
+    averageDifferencePerDay: difference !== null && daysWithYazioData > 0 ? difference / daysWithYazioData : null,
+  };
+}
+
+function energyDifferenceHint(value: number | null) {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return "keine Yazio-Zieldaten im Zeitraum";
+  }
+  if (value < 0) {
+    return "unter Yazio-Ziel im Zeitraum";
+  }
+  if (value > 0) {
+    return "über Yazio-Ziel im Zeitraum";
+  }
+  return "genau auf Yazio-Ziel im Zeitraum";
+}
 function sum(rows: DailyRow[], key: string) {
   const values = rows
     .map((row) => row[key])
@@ -526,6 +573,7 @@ export default async function Home({ searchParams }: { searchParams?: SearchPara
   const selectedRows = selectRows(series, range, params.from, params.to);
   const workouts = Array.isArray(metrics.workouts) ? metrics.workouts : [];
   const sourceStatus = metrics.source_status ?? {};
+  const energyBalance = calculateEnergyBalance(selectedRows);
   const composition = metrics.body_composition ?? {};
   const selectedLabel = customRangeActive
     ? "Benutzerdefiniert"
@@ -609,7 +657,7 @@ export default async function Home({ searchParams }: { searchParams?: SearchPara
           hint="im ausgewählten Zeitraum"
         />
         <MetricCard
-          label="Kalorien Ø"
+          label="Kalorien Ø pro Tag"
           value={formatNumber(average(selectedRows, "calories"), " kcal")}
           hint="tägliche Aufnahme aus Yazio"
         />
@@ -653,6 +701,40 @@ export default async function Home({ searchParams }: { searchParams?: SearchPara
         ) : null}
       </section>
 
+      <section className="section-stack" aria-label="Energiebilanz im Zeitraum">
+        <div className="section-heading">
+          <div>
+            <span>Energiebilanz im Zeitraum</span>
+            <h2>Yazio-Aufnahme vs. Yazio-Ziel</h2>
+          </div>
+        </div>
+        <div className="metrics-grid">
+          <MetricCard
+            label="Kalorien aufgenommen gesamt"
+            value={formatKcal(energyBalance.consumed)}
+            hint="im ausgewählten Zeitraum"
+          />
+          <MetricCard
+            label="Yazio-Ziel gesamt"
+            value={formatKcal(energyBalance.goal)}
+            hint="Summe der Tagesziele"
+          />
+          <MetricCard
+            label="Differenz zum Yazio-Ziel"
+            value={formatKcal(energyBalance.difference, true)}
+            hint={energyDifferenceHint(energyBalance.difference)}
+          />
+          <MetricCard
+            label="Rechnerisches Fettäquivalent"
+            value={formatFatEquivalent(energyBalance.fatEquivalent)}
+            hint="Näherung auf Basis 7.700 kcal/kg"
+          />
+        </div>
+        <p className="section-note">
+          Rechnerisches Fettäquivalent aus der Differenz zum Yazio-Ziel. Waage und Körperfettwerte können durch Wasser,
+          Glykogen, Kreatin, Verdauung und Training abweichen.
+        </p>
+      </section>
       <BodyComposition composition={composition} />
 
       <section className="report-grid">

@@ -307,6 +307,13 @@ h1 {
   margin-top: 18px;
 }
 
+.section-note {
+  color: var(--muted);
+  line-height: 1.55;
+  margin: 12px 0 0;
+  max-width: 840px;
+}
+
 .section-heading {
   align-items: end;
   display: flex;
