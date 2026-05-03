@@ -42,6 +42,15 @@ Close PowerShell and open a new one afterwards. The script first reuses `token.t
 
 The local dashboard also imports optional body-composition CSV files from `C:\Tools\Yazio\seca-data`. Override the path with `SECA_DATA_DIR` if needed. Health Connect stays external under `C:\Tools\Yazio\health-data`; these exports are not copied into Git.
 
+seca myAnalytics upload:
+
+1. Export the seca myAnalytics table as CSV.
+2. Open the local dashboard.
+3. Drag the CSV into the `seca Import` area or choose it with the file picker.
+4. The dashboard stores the file locally in `C:\Tools\Yazio\seca-data`, runs the seca import, and refreshes the metrics.
+
+Only CSV/TXT uploads are supported right now. PDF parsing is intentionally not implemented yet.
+
 5. After completion, the script will generate the following CSV files:
 
 nutrition_log.csv

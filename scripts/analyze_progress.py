@@ -9,6 +9,34 @@ DB_PATH = REPO_DIR / "db" / "fitness_dashboard.sqlite"
 SCHEMA_PATH = REPO_DIR / "db" / "schema.sql"
 OUTPUT_PATH = REPO_DIR / "data" / "latest_metrics.json"
 OAT_MILK_KCAL_PER_100_ML = 46
+COMPOSITION_FIELDS = [
+    "measured_at",
+    "date",
+    "weight_kg",
+    "body_fat_percent",
+    "fat_mass_kg",
+    "muscle_mass_kg",
+    "skeletal_muscle_mass_kg",
+    "skeletal_muscle_mass_percent",
+    "body_water_percent",
+    "body_water_l",
+    "bmi",
+    "visceral_fat",
+    "visceral_fat_l",
+    "basal_metabolic_rate_kcal",
+    "waist_circumference_cm",
+    "waist_hip_ratio",
+    "muscle_right_arm_kg",
+    "muscle_left_arm_kg",
+    "muscle_torso_kg",
+    "muscle_right_leg_kg",
+    "muscle_left_leg_kg",
+    "fat_right_arm_kg",
+    "fat_left_arm_kg",
+    "fat_torso_kg",
+    "fat_right_leg_kg",
+    "fat_left_leg_kg",
+]
 
 
 def avg(values):
@@ -117,6 +145,32 @@ def row_value(row, key):
     return row[key] if row and key in row.keys() else None
 
 
+def row_to_dict(row, fields):
+    if not row:
+        return {}
+    return {field: row_value(row, field) for field in fields if field in row.keys()}
+
+
+def serialize_composition(rows):
+    series = [row_to_dict(row, COMPOSITION_FIELDS) for row in rows]
+    latest = series[-1] if series else {}
+    previous = series[-2] if len(series) >= 2 else {}
+    delta = {}
+    if latest and previous:
+        for field, latest_value in latest.items():
+            previous_value = previous.get(field)
+            if isinstance(latest_value, (int, float)) and isinstance(previous_value, (int, float)):
+                delta[field] = round(latest_value - previous_value, 2)
+            elif field not in {"date", "measured_at"}:
+                delta[field] = None
+    return {
+        "latest": latest,
+        "previous": previous,
+        "delta": delta,
+        "series": series,
+    }
+
+
 def serialize_import_runs(rows):
     result = {}
     for row in rows:
@@ -202,12 +256,25 @@ def build_series(dates, nutrition, body, health, composition):
                 "fat_mass_kg": row_value(composition_row, "fat_mass_kg"),
                 "muscle_mass_kg": row_value(composition_row, "muscle_mass_kg"),
                 "skeletal_muscle_mass_kg": row_value(composition_row, "skeletal_muscle_mass_kg"),
+                "skeletal_muscle_mass_percent": row_value(composition_row, "skeletal_muscle_mass_percent"),
                 "body_water_percent": row_value(composition_row, "body_water_percent"),
                 "body_water_l": row_value(composition_row, "body_water_l"),
                 "bmi": row_value(composition_row, "bmi"),
                 "visceral_fat": row_value(composition_row, "visceral_fat"),
+                "visceral_fat_l": row_value(composition_row, "visceral_fat_l"),
                 "basal_metabolic_rate_kcal": row_value(composition_row, "basal_metabolic_rate_kcal"),
+                "waist_circumference_cm": row_value(composition_row, "waist_circumference_cm"),
                 "waist_hip_ratio": row_value(composition_row, "waist_hip_ratio"),
+                "muscle_right_arm_kg": row_value(composition_row, "muscle_right_arm_kg"),
+                "muscle_left_arm_kg": row_value(composition_row, "muscle_left_arm_kg"),
+                "muscle_torso_kg": row_value(composition_row, "muscle_torso_kg"),
+                "muscle_right_leg_kg": row_value(composition_row, "muscle_right_leg_kg"),
+                "muscle_left_leg_kg": row_value(composition_row, "muscle_left_leg_kg"),
+                "fat_right_arm_kg": row_value(composition_row, "fat_right_arm_kg"),
+                "fat_left_arm_kg": row_value(composition_row, "fat_left_arm_kg"),
+                "fat_torso_kg": row_value(composition_row, "fat_torso_kg"),
+                "fat_right_leg_kg": row_value(composition_row, "fat_right_leg_kg"),
+                "fat_left_leg_kg": row_value(composition_row, "fat_left_leg_kg"),
             }
         )
     return series
@@ -241,6 +308,7 @@ def main():
             },
             "source_status": serialize_import_runs(import_runs),
             "workouts": serialize_workouts(workouts),
+            "body_composition": serialize_composition(composition),
             "series": [],
         }
         OUTPUT_PATH.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
@@ -328,6 +396,7 @@ def main():
         },
         "source_status": serialize_import_runs(import_runs),
         "workouts": serialize_workouts(workouts),
+        "body_composition": serialize_composition(composition),
         "series": build_series(all_dates, nutrition, body, health, composition),
     }
 

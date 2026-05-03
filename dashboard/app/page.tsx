@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getDashboardData } from "../lib/data";
+import { SecaUpload } from "./components/SecaUpload";
 
 export const dynamic = "force-dynamic";
 
@@ -17,11 +18,35 @@ const RANGE_OPTIONS = [
   { label: "Alle", value: "all" },
 ];
 
+const BODY_LABELS: Record<string, { label: string; suffix: string }> = {
+  weight_kg: { label: "Gewicht", suffix: " kg" },
+  body_fat_percent: { label: "Körperfett", suffix: " %" },
+  fat_mass_kg: { label: "Fettmasse", suffix: " kg" },
+  muscle_mass_kg: { label: "Muskelmasse", suffix: " kg" },
+  skeletal_muscle_mass_kg: { label: "Skelettmuskelmasse", suffix: " kg" },
+  skeletal_muscle_mass_percent: { label: "Skelettmuskelmasse", suffix: " %" },
+  body_water_percent: { label: "Körperwasser", suffix: " %" },
+  body_water_l: { label: "Körperwasser", suffix: " l" },
+  bmi: { label: "BMI", suffix: "" },
+  visceral_fat: { label: "Viszerales Fett", suffix: "" },
+  visceral_fat_l: { label: "Viszerales Fett", suffix: " l" },
+  basal_metabolic_rate_kcal: { label: "Grundumsatz", suffix: " kcal/Tag" },
+  waist_circumference_cm: { label: "Taillenumfang", suffix: " cm" },
+};
+
 function formatNumber(value: unknown, suffix = "") {
   if (typeof value !== "number" || Number.isNaN(value)) {
     return "n/a";
   }
   return `${new Intl.NumberFormat("de-DE", { maximumFractionDigits: 1 }).format(value)}${suffix}`;
+}
+
+function formatDelta(value: unknown, suffix = "") {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return "n/a";
+  }
+  const sign = value > 0 ? "+" : "";
+  return `${sign}${formatNumber(value, suffix)}`;
 }
 
 function formatDate(value: unknown) {
@@ -91,6 +116,10 @@ function numbersInOrder(rows: DailyRow[], key: string) {
 
 function trainingDays(rows: DailyRow[]) {
   return rows.reduce((total, row) => total + (row.training ? 1 : 0), 0);
+}
+
+function hasValue(row: Record<string, any>, key: string) {
+  return typeof row?.[key] === "number" && !Number.isNaN(row[key]);
 }
 
 function normalizeRange(value: unknown) {
@@ -179,6 +208,79 @@ function MetricCard({
   );
 }
 
+function CompositionCard({
+  field,
+  latest,
+  delta,
+  helper,
+}: {
+  field: string;
+  latest: Record<string, any>;
+  delta: Record<string, any>;
+  helper?: string;
+}) {
+  const meta = BODY_LABELS[field];
+  if (!meta || !hasValue(latest, field)) {
+    return null;
+  }
+  const deltaValue = delta?.[field];
+  const direction = typeof deltaValue === "number" ? (deltaValue > 0 ? "up" : deltaValue < 0 ? "down" : "flat") : "flat";
+  return (
+    <article className="composition-card">
+      <span>{meta.label}</span>
+      <strong>{formatNumber(latest[field], meta.suffix)}</strong>
+      <div className={`trend-pill ${direction}`}>
+        {typeof deltaValue === "number" ? formatDelta(deltaValue, meta.suffix) : "kein Vergleich"}
+      </div>
+      {helper ? <small>{helper}</small> : null}
+      <div className="neutral-scale" aria-hidden="true">
+        <i />
+      </div>
+    </article>
+  );
+}
+
+function BodyComposition({ composition }: { composition: Record<string, any> }) {
+  const latest = composition?.latest ?? {};
+  const delta = composition?.delta ?? {};
+  const hasComposition = Object.keys(latest).some((key) => hasValue(latest, key));
+  if (!hasComposition) {
+    return null;
+  }
+  return (
+    <section className="section-stack" aria-label="Körperzusammensetzung">
+      <div className="section-heading">
+        <span>Körperzusammensetzung</span>
+        <h2>Aktuellste seca Messung</h2>
+        <small>{latest.date ? formatDate(latest.date) : "Datum unbekannt"}</small>
+      </div>
+      <div className="composition-grid">
+        <CompositionCard field="weight_kg" latest={latest} delta={delta} />
+        <CompositionCard
+          field="body_fat_percent"
+          latest={latest}
+          delta={delta}
+          helper={hasValue(latest, "fat_mass_kg") ? `Fettmasse: ${formatNumber(latest.fat_mass_kg, " kg")}` : undefined}
+        />
+        <CompositionCard
+          field="skeletal_muscle_mass_kg"
+          latest={latest}
+          delta={delta}
+          helper={
+            hasValue(latest, "skeletal_muscle_mass_percent")
+              ? `${formatNumber(latest.skeletal_muscle_mass_percent, " %")}`
+              : undefined
+          }
+        />
+        <CompositionCard field={hasValue(latest, "visceral_fat_l") ? "visceral_fat_l" : "visceral_fat"} latest={latest} delta={delta} />
+        <CompositionCard field={hasValue(latest, "body_water_percent") ? "body_water_percent" : "body_water_l"} latest={latest} delta={delta} />
+        <CompositionCard field="bmi" latest={latest} delta={delta} />
+        <CompositionCard field="basal_metabolic_rate_kcal" latest={latest} delta={delta} />
+      </div>
+    </section>
+  );
+}
+
 function DataStatus({ sourceStatus }: { sourceStatus: Record<string, any> }) {
   const sources = ["yazio", "health_connect", "seca", "workout_csv"];
   return (
@@ -216,32 +318,26 @@ function DataStatus({ sourceStatus }: { sourceStatus: Record<string, any> }) {
   );
 }
 
-function BodyChart({ rows }: { rows: DailyRow[] }) {
-  const lines = [
-    { key: "weight_kg", label: "Gewicht", color: "#58d68d", suffix: " kg" },
-    { key: "body_fat_percent", label: "Körperfett", color: "#6bb8ff", suffix: " %" },
-    { key: "muscle_mass_kg", label: "Muskelmasse", color: "#f2c94c", suffix: " kg" },
-    { key: "skeletal_muscle_mass_kg", label: "Skelettmuskelmasse", color: "#d6f26b", suffix: " kg" },
-    { key: "fat_mass_kg", label: "Fettmasse", color: "#ff8f70", suffix: " kg" },
-    { key: "body_water_percent", label: "Körperwasser", color: "#9bdbff", suffix: " %" },
-    { key: "bmi", label: "BMI", color: "#c7a8ff", suffix: "" },
-    { key: "visceral_fat", label: "Viszerales Fett", color: "#ffb86b", suffix: "" },
-  ].filter((line) => hasNumber(rows, line.key));
+function LineChart({
+  title,
+  rows,
+  lines,
+}: {
+  title: string;
+  rows: DailyRow[];
+  lines: Array<{ key: string; label: string; color: string }>;
+}) {
+  const visibleLines = lines.filter((line) => hasNumber(rows, line.key));
 
-  if (lines.length === 0) {
-    return (
-      <article className="panel wide">
-        <span>Körperwerte Verlauf</span>
-        <p>Noch keine Körperwerte im ausgewählten Zeitraum.</p>
-      </article>
-    );
+  if (visibleLines.length === 0) {
+    return null;
   }
 
   const width = 900;
   const height = 280;
   const padding = { top: 24, right: 24, bottom: 34, left: 46 };
   const values = rows.flatMap((row) =>
-    lines
+    visibleLines
       .map((line) => row[line.key])
       .filter((value) => typeof value === "number" && !Number.isNaN(value)),
   );
@@ -256,10 +352,10 @@ function BodyChart({ rows }: { rows: DailyRow[] }) {
   return (
     <article className="panel wide chart-panel">
       <div className="panel-title-row">
-        <span>Körperwerte Verlauf</span>
+        <span>{title}</span>
         <small>{rows.length} Tage im Zeitraum</small>
       </div>
-      <svg className="body-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Körperwerte Verlauf">
+      <svg className="body-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={title}>
         <line x1={padding.left} x2={width - padding.right} y1={height - padding.bottom} y2={height - padding.bottom} />
         <line x1={padding.left} x2={padding.left} y1={padding.top} y2={height - padding.bottom} />
         <text x={padding.left} y={18}>{formatNumber(max)}</text>
@@ -269,7 +365,7 @@ function BodyChart({ rows }: { rows: DailyRow[] }) {
             {index === 0 || index === rows.length - 1 ? formatDate(row.date).replace("2026", "") : ""}
           </text>
         ))}
-        {lines.map((line) => {
+        {visibleLines.map((line) => {
           const points = rows
             .map((row, index) => ({ x: xFor(index), y: yFor(row[line.key]), value: row[line.key] }))
             .filter((point) => typeof point.value === "number" && !Number.isNaN(point.value));
@@ -285,11 +381,88 @@ function BodyChart({ rows }: { rows: DailyRow[] }) {
         })}
       </svg>
       <div className="chart-legend">
-        {lines.map((line) => (
+        {visibleLines.map((line) => (
           <span key={line.key}>
             <i style={{ background: line.color }} />
             {line.label}
           </span>
+        ))}
+      </div>
+    </article>
+  );
+}
+
+function BodyCharts({ rows }: { rows: DailyRow[] }) {
+  const charts = [
+    {
+      title: "Gewicht, Fettmasse, Muskelmasse",
+      lines: [
+        { key: "weight_kg", label: "Gewicht kg", color: "#58d68d" },
+        { key: "fat_mass_kg", label: "Fettmasse kg", color: "#ff8f70" },
+        { key: "muscle_mass_kg", label: "Muskelmasse kg", color: "#f2c94c" },
+        { key: "skeletal_muscle_mass_kg", label: "Skelettmuskelmasse kg", color: "#d6f26b" },
+      ],
+    },
+    {
+      title: "Prozentwerte",
+      lines: [
+        { key: "body_fat_percent", label: "Körperfett %", color: "#6bb8ff" },
+        { key: "body_water_percent", label: "Körperwasser %", color: "#9bdbff" },
+        { key: "skeletal_muscle_mass_percent", label: "Skelettmuskelmasse %", color: "#d6f26b" },
+      ],
+    },
+    {
+      title: "Weitere seca Werte",
+      lines: [
+        { key: "bmi", label: "BMI", color: "#c7a8ff" },
+        { key: "visceral_fat", label: "Viszerales Fett", color: "#ffb86b" },
+        { key: "visceral_fat_l", label: "Viszerales Fett l", color: "#ffb86b" },
+        { key: "basal_metabolic_rate_kcal", label: "Grundumsatz kcal/Tag", color: "#58d68d" },
+      ],
+    },
+  ];
+  const hasAnyChart = charts.some((chart) => chart.lines.some((line) => hasNumber(rows, line.key)));
+  if (!hasAnyChart) {
+    return (
+      <article className="panel wide">
+        <span>Körperwerte Verlauf</span>
+        <p>Noch keine Körperwerte im ausgewählten Zeitraum.</p>
+      </article>
+    );
+  }
+  return (
+    <>
+      {charts.map((chart) => (
+        <LineChart key={chart.title} rows={rows} title={chart.title} lines={chart.lines} />
+      ))}
+    </>
+  );
+}
+
+function SegmentAnalysis({ latest }: { latest: Record<string, any> }) {
+  const segments = [
+    ["Rechter Arm", "muscle_right_arm_kg"],
+    ["Linker Arm", "muscle_left_arm_kg"],
+    ["Rumpf", "muscle_torso_kg"],
+    ["Rechtes Bein", "muscle_right_leg_kg"],
+    ["Linkes Bein", "muscle_left_leg_kg"],
+  ].filter(([, key]) => hasValue(latest, key));
+  if (segments.length < 2) {
+    return null;
+  }
+  const max = Math.max(...segments.map(([, key]) => latest[key]));
+  return (
+    <article className="panel wide">
+      <span>Segmentale Muskelmasse</span>
+      <div className="segment-list">
+        {segments.map(([label, key]) => (
+          <div className="segment-row" key={key}>
+            <strong>{label}</strong>
+            <div className="segment-bar">
+              <i style={{ width: `${Math.max(6, (latest[key] / max) * 100)}%` }} />
+            </div>
+            <small>{formatNumber(latest[key], " kg")}</small>
+          </div>
         ))}
       </div>
     </article>
@@ -335,6 +508,7 @@ export default async function Home({ searchParams }: { searchParams?: SearchPara
   const selectedRows = selectRows(series, range, params.from, params.to);
   const workouts = Array.isArray(metrics.workouts) ? metrics.workouts : [];
   const sourceStatus = metrics.source_status ?? {};
+  const composition = metrics.body_composition ?? {};
   const selectedLabel = customRangeActive
     ? "Benutzerdefiniert"
     : RANGE_OPTIONS.find((option) => option.value === range)?.label ?? "7 Tage";
@@ -403,6 +577,8 @@ export default async function Home({ searchParams }: { searchParams?: SearchPara
 
       <DataStatus sourceStatus={sourceStatus} />
 
+      <SecaUpload />
+
       <section className="metrics-grid" aria-label="Kennzahlen">
         <MetricCard
           label="Gewicht aktuell"
@@ -459,8 +635,11 @@ export default async function Home({ searchParams }: { searchParams?: SearchPara
         ) : null}
       </section>
 
+      <BodyComposition composition={composition} />
+
       <section className="report-grid">
-        <BodyChart rows={selectedRows} />
+        <BodyCharts rows={selectedRows} />
+        <SegmentAnalysis latest={composition.latest ?? {}} />
         <WorkoutsPanel workouts={workouts} selectedRows={selectedRows} />
       </section>
 

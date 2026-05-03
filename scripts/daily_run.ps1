@@ -58,12 +58,19 @@ Copy-YazioCsv
 Invoke-Step "Yazio CSVs in SQLite importieren" @("python", ".\scripts\import_yazio.py")
 Invoke-Step "Body-Log importieren" @("python", ".\scripts\import_body_log.py")
 Invoke-Step "Health-Connect-Export importieren" @("python", ".\scripts\import_health_connect.py")
-if ((Test-Path $SecaDataDir) -and ((Get-ChildItem -LiteralPath $SecaDataDir -Filter "*.csv" -File -ErrorAction SilentlyContinue | Select-Object -First 1) -ne $null)) {
+$SecaFiles = @()
+if (Test-Path $SecaDataDir) {
+    $SecaFiles = @(
+        Get-ChildItem -LiteralPath $SecaDataDir -Filter "*.csv" -File -ErrorAction SilentlyContinue
+        Get-ChildItem -LiteralPath $SecaDataDir -Filter "*.txt" -File -ErrorAction SilentlyContinue
+    )
+}
+if ($SecaFiles.Count -gt 0) {
     Invoke-Step "seca CSVs importieren" @("python", ".\scripts\import_seca.py")
 } else {
     Write-Host ""
     Write-Host "==> seca CSVs importieren"
-    Write-Host "seca-Datenordner nicht vorhanden oder ohne CSV-Dateien, überspringe seca Import."
+    Write-Host "seca-Datenordner nicht vorhanden oder ohne CSV/TXT-Dateien, überspringe seca Import."
 }
 Invoke-Step "Fortschritt analysieren" @("python", ".\scripts\analyze_progress.py")
 Invoke-Step "AI-Report erzeugen" @("python", ".\scripts\generate_ai_report.py")

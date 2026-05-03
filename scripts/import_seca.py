@@ -12,6 +12,49 @@ DB_PATH = REPO_DIR / "db" / "fitness_dashboard.sqlite"
 SCHEMA_PATH = REPO_DIR / "db" / "schema.sql"
 SECA_DATA_DIR = Path(os.environ.get("SECA_DATA_DIR", r"C:\Tools\Yazio\seca-data"))
 
+COMPOSITION_FIELDS = [
+    "weight_kg",
+    "body_fat_percent",
+    "fat_mass_kg",
+    "muscle_mass_kg",
+    "skeletal_muscle_mass_kg",
+    "skeletal_muscle_mass_percent",
+    "body_water_percent",
+    "body_water_l",
+    "bmi",
+    "visceral_fat",
+    "visceral_fat_l",
+    "basal_metabolic_rate_kcal",
+    "waist_circumference_cm",
+    "waist_hip_ratio",
+    "muscle_right_arm_kg",
+    "muscle_left_arm_kg",
+    "muscle_torso_kg",
+    "muscle_right_leg_kg",
+    "muscle_left_leg_kg",
+    "fat_right_arm_kg",
+    "fat_left_arm_kg",
+    "fat_torso_kg",
+    "fat_right_leg_kg",
+    "fat_left_leg_kg",
+]
+
+OPTIONAL_COLUMNS = {
+    "skeletal_muscle_mass_percent": "REAL",
+    "visceral_fat_l": "REAL",
+    "waist_circumference_cm": "REAL",
+    "muscle_right_arm_kg": "REAL",
+    "muscle_left_arm_kg": "REAL",
+    "muscle_torso_kg": "REAL",
+    "muscle_right_leg_kg": "REAL",
+    "muscle_left_leg_kg": "REAL",
+    "fat_right_arm_kg": "REAL",
+    "fat_left_arm_kg": "REAL",
+    "fat_torso_kg": "REAL",
+    "fat_right_leg_kg": "REAL",
+    "fat_left_leg_kg": "REAL",
+}
+
 
 FIELD_ALIASES = {
     "date": {"datum", "date", "messdatum"},
@@ -28,7 +71,13 @@ FIELD_ALIASES = {
     },
     "fat_mass_kg": {"fettmasse", "fat_mass", "fatmass", "fat_mass_kg"},
     "muscle_mass_kg": {"muskelmasse", "muscle_mass", "musclemass", "muscle_mass_kg"},
-    "skeletal_muscle_mass_kg": {"skelettmuskelmasse", "skeletal_muscle_mass", "skeletalmusclemass"},
+    "skeletal_muscle_mass_kg": {
+        "skelettmuskelmasse",
+        "skeletal_muscle_mass",
+        "skeletalmusclemass",
+        "skelettmuskelmasse_in_abhaengigkeit_vom_alter",
+    },
+    "skeletal_muscle_mass_percent": {"skelettmuskelmasse_percent", "skeletal_muscle_mass_percent"},
     "body_water_percent": {
         "korperwasser",
         "koerperwasser",
@@ -40,8 +89,20 @@ FIELD_ALIASES = {
     "body_water_l": {"korperwasser_l", "koerperwasser_l", "body_water_l", "bodywater_l"},
     "bmi": {"bmi", "body_mass_index"},
     "visceral_fat": {"viszerales_fett", "visceral_fat", "visceralfat"},
+    "visceral_fat_l": {"viszerales_fett_l", "visceral_fat_l", "visceralfat_l"},
     "basal_metabolic_rate_kcal": {"grundumsatz", "basal_metabolic_rate", "bmr", "grundumsatz_kcal"},
+    "waist_circumference_cm": {"taillenumfang", "waist_circumference", "waist_circumference_cm"},
     "waist_hip_ratio": {"waist_hip_ratio", "whr", "taille_hufte", "taille_huefte"},
+    "muscle_right_arm_kg": {"rechter_arm_muskel", "right_arm_muscle", "muscle_right_arm"},
+    "muscle_left_arm_kg": {"linker_arm_muskel", "left_arm_muscle", "muscle_left_arm"},
+    "muscle_torso_kg": {"torso_muskel", "rumpf_muskel", "trunk_muscle", "muscle_torso", "torso"},
+    "muscle_right_leg_kg": {"rechtes_bein_muskel", "right_leg_muscle", "muscle_right_leg"},
+    "muscle_left_leg_kg": {"linkes_bein_muskel", "left_leg_muscle", "muscle_left_leg"},
+    "fat_right_arm_kg": {"rechter_arm_fett", "right_arm_fat", "fat_right_arm"},
+    "fat_left_arm_kg": {"linker_arm_fett", "left_arm_fat", "fat_left_arm"},
+    "fat_torso_kg": {"torso_fett", "rumpf_fett", "trunk_fat", "fat_torso"},
+    "fat_right_leg_kg": {"rechtes_bein_fett", "right_leg_fat", "fat_right_leg"},
+    "fat_left_leg_kg": {"linkes_bein_fett", "left_leg_fat", "fat_left_leg"},
 }
 
 GERMAN_MONTHS = {
@@ -83,7 +144,18 @@ def connect_db():
     con = sqlite3.connect(DB_PATH)
     with open(SCHEMA_PATH, "r", encoding="utf-8") as schema_file:
         con.executescript(schema_file.read())
+    ensure_optional_columns(con)
     return con
+
+
+def ensure_optional_columns(con):
+    columns = {
+        row[1]
+        for row in con.execute("PRAGMA table_info(body_composition_measurements)")
+    }
+    for column, column_type in OPTIONAL_COLUMNS.items():
+        if column not in columns:
+            con.execute(f"ALTER TABLE body_composition_measurements ADD COLUMN {column} {column_type}")
 
 
 def write_import_run(
@@ -223,6 +295,43 @@ def target_for_label(label):
     return None
 
 
+def tableview_target(label, unit):
+    normalized = normalize_header(label)
+    unit_text = normalize_header(unit)
+    if normalized == "viszerales_fett" and unit_text in {"liter", "l"}:
+        return "visceral_fat_l"
+    if normalized == "skelettmuskelmasse" and unit_text in {"percent", "prozent"}:
+        return "skeletal_muscle_mass_percent"
+    return target_for_label(label)
+
+
+def segment_context(label):
+    normalized = normalize_header(label)
+    if "segmentale" in normalized and "skelettmuskelmasse" in normalized:
+        return "muscle"
+    if "segmentale" in normalized and "fett" in normalized:
+        return "fat"
+    return None
+
+
+def segment_field(context, label):
+    if context not in {"muscle", "fat"}:
+        return None
+    normalized = normalize_header(label)
+    prefix = "muscle" if context == "muscle" else "fat"
+    if normalized == "rechter_arm":
+        return f"{prefix}_right_arm_kg"
+    if normalized == "linker_arm":
+        return f"{prefix}_left_arm_kg"
+    if normalized in {"torso", "rumpf"}:
+        return f"{prefix}_torso_kg"
+    if normalized == "rechtes_bein":
+        return f"{prefix}_right_leg_kg"
+    if normalized == "linkes_bein":
+        return f"{prefix}_left_leg_kg"
+    return None
+
+
 def build_tableview_measurements(rows):
     headers = list(rows[0].keys()) if rows else []
     if len(headers) < 3 or normalize_header(headers[0]) != "wert" or normalize_header(headers[1]) != "einheit":
@@ -250,12 +359,17 @@ def build_tableview_measurements(rows):
             "visceral_fat": None,
             "basal_metabolic_rate_kcal": None,
             "waist_hip_ratio": None,
-            "raw": {},
             "imported_at": imported_at,
+            "raw": {},
         }
+        for field in COMPOSITION_FIELDS:
+            by_measured_at[measured_at].setdefault(field, None)
 
+    active_segment_context = None
     for row in rows:
-        target = target_for_label(row.get(headers[0]))
+        label = row.get(headers[0])
+        active_segment_context = segment_context(label) or active_segment_context
+        target = segment_field(active_segment_context, label) or tableview_target(label, row.get(headers[1]))
         if not target:
             continue
         for column in date_columns:
@@ -273,22 +387,7 @@ def build_tableview_measurements(rows):
 
     measurements = []
     for measurement in by_measured_at.values():
-        if any(
-            measurement[key] is not None
-            for key in [
-                "weight_kg",
-                "body_fat_percent",
-                "fat_mass_kg",
-                "muscle_mass_kg",
-                "skeletal_muscle_mass_kg",
-                "body_water_percent",
-                "body_water_l",
-                "bmi",
-                "visceral_fat",
-                "basal_metabolic_rate_kcal",
-                "waist_hip_ratio",
-            ]
-        ):
+        if any(measurement[key] is not None for key in COMPOSITION_FIELDS):
             measurement["raw_json"] = json.dumps(measurement.pop("raw"), ensure_ascii=False)
             measurements.append(measurement)
 
@@ -325,20 +424,11 @@ def build_measurements(path):
         measurement = {
             "measured_at": measured_at,
             "date": day,
-            "weight_kg": to_float(mapped.get("weight_kg")),
-            "body_fat_percent": to_float(mapped.get("body_fat_percent")),
-            "fat_mass_kg": to_float(mapped.get("fat_mass_kg")),
-            "muscle_mass_kg": to_float(mapped.get("muscle_mass_kg")),
-            "skeletal_muscle_mass_kg": to_float(mapped.get("skeletal_muscle_mass_kg")),
-            "body_water_percent": to_float(mapped.get("body_water_percent")),
-            "body_water_l": to_float(mapped.get("body_water_l")),
-            "bmi": to_float(mapped.get("bmi")),
-            "visceral_fat": to_float(mapped.get("visceral_fat")),
-            "basal_metabolic_rate_kcal": to_float(mapped.get("basal_metabolic_rate_kcal")),
-            "waist_hip_ratio": to_float(mapped.get("waist_hip_ratio")),
             "raw_json": json.dumps(row, ensure_ascii=False),
             "imported_at": imported_at,
         }
+        for field in COMPOSITION_FIELDS:
+            measurement[field] = to_float(mapped.get(field))
         if not measurement["measured_at"]:
             measurement["measured_at"] = f"{day}T00:00:00+00:00"
         measurements.append(measurement)
@@ -347,46 +437,26 @@ def build_measurements(path):
 
 
 def upsert_measurements(con, measurements):
+    field_columns = ", ".join(COMPOSITION_FIELDS)
+    field_placeholders = ", ".join(["?"] * len(COMPOSITION_FIELDS))
+    update_fields = ",\n            ".join(
+        f"{field} = excluded.{field}" for field in ["date", *COMPOSITION_FIELDS, "raw_json", "imported_at"]
+    )
     con.executemany(
-        """
+        f"""
         INSERT INTO body_composition_measurements (
-            measured_at, date, source, weight_kg, body_fat_percent, fat_mass_kg,
-            muscle_mass_kg, skeletal_muscle_mass_kg, body_water_percent,
-            body_water_l, bmi, visceral_fat, basal_metabolic_rate_kcal,
-            waist_hip_ratio, raw_json, imported_at
+            measured_at, date, source, {field_columns},
+            raw_json, imported_at
         )
-        VALUES (?, ?, 'seca', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, 'seca', {field_placeholders}, ?, ?)
         ON CONFLICT(source, measured_at) DO UPDATE SET
-            date = excluded.date,
-            weight_kg = excluded.weight_kg,
-            body_fat_percent = excluded.body_fat_percent,
-            fat_mass_kg = excluded.fat_mass_kg,
-            muscle_mass_kg = excluded.muscle_mass_kg,
-            skeletal_muscle_mass_kg = excluded.skeletal_muscle_mass_kg,
-            body_water_percent = excluded.body_water_percent,
-            body_water_l = excluded.body_water_l,
-            bmi = excluded.bmi,
-            visceral_fat = excluded.visceral_fat,
-            basal_metabolic_rate_kcal = excluded.basal_metabolic_rate_kcal,
-            waist_hip_ratio = excluded.waist_hip_ratio,
-            raw_json = excluded.raw_json,
-            imported_at = excluded.imported_at
+            {update_fields}
         """,
         [
             (
                 row["measured_at"],
                 row["date"],
-                row["weight_kg"],
-                row["body_fat_percent"],
-                row["fat_mass_kg"],
-                row["muscle_mass_kg"],
-                row["skeletal_muscle_mass_kg"],
-                row["body_water_percent"],
-                row["body_water_l"],
-                row["bmi"],
-                row["visceral_fat"],
-                row["basal_metabolic_rate_kcal"],
-                row["waist_hip_ratio"],
+                *[row[field] for field in COMPOSITION_FIELDS],
                 row["raw_json"],
                 row["imported_at"],
             )
@@ -422,9 +492,9 @@ def main():
             con.commit()
         return
 
-    csv_files = sorted(SECA_DATA_DIR.glob("*.csv"))
+    csv_files = sorted([*SECA_DATA_DIR.glob("*.csv"), *SECA_DATA_DIR.glob("*.txt")])
     if not csv_files:
-        print(f"Keine seca CSV-Dateien gefunden, überspringe seca Import: {SECA_DATA_DIR}")
+        print(f"Keine seca CSV/TXT-Dateien gefunden, überspringe seca Import: {SECA_DATA_DIR}")
         with connect_db() as con:
             write_import_run(
                 con,
