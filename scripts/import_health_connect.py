@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import zipfile
 from datetime import date, datetime, timedelta, timezone
@@ -167,6 +168,19 @@ def find_db_in_dir(directory):
     return None
 
 
+def find_db_in_extracted_dir(extracted_dir):
+    direct = extracted_dir / "health_connect_export.db"
+    if safe_exists(direct):
+        return direct
+
+    if safe_exists(extracted_dir):
+        matches = safe_rglob(extracted_dir, "health_connect_export.db")
+        if matches:
+            return matches[0]
+
+    return None
+
+
 def safe_exists(path):
     try:
         return path.exists()
@@ -191,34 +205,72 @@ def safe_rglob(directory, pattern):
         return []
 
 
+def latest_zip_in_dir(directory):
+    try:
+        return next(iter(sorted(safe_glob(directory, "*.zip"), key=lambda path: path.stat().st_mtime, reverse=True)), None)
+    except OSError as exc:
+        print(f"ZIP-Dateien nicht lesbar, ueberspringe: {directory} ({exc})")
+        return None
+
+
+def is_zip_newer_than_db(zip_path, db_path):
+    if not zip_path:
+        return False
+    if not db_path:
+        return True
+    try:
+        return zip_path.stat().st_mtime > db_path.stat().st_mtime + 1
+    except OSError:
+        return True
+
+
+def safe_extract_zip(zip_path, extracted_dir):
+    extracted_dir.mkdir(parents=True, exist_ok=True)
+    extracted_root = extracted_dir.resolve()
+    with zipfile.ZipFile(zip_path, "r") as archive:
+        for member in archive.infolist():
+            target = (extracted_dir / member.filename).resolve()
+            if target != extracted_root and extracted_root not in target.parents:
+                raise ValueError(f"Unsicherer Pfad in ZIP, breche Entpacken ab: {member.filename}")
+        archive.extractall(extracted_dir)
+
+
+def extract_health_zip(zip_path, directory, reason):
+    if not zip_path:
+        return None
+
+    extracted_dir = directory / "extracted"
+    print(reason)
+    try:
+        if safe_exists(extracted_dir):
+            shutil.rmtree(extracted_dir)
+        safe_extract_zip(zip_path, extracted_dir)
+    except zipfile.BadZipFile:
+        print(f"Ungueltige ZIP-Datei, ueberspringe: {zip_path}")
+        return None
+    except OSError as exc:
+        print(f"Extract-Ziel nicht beschreibbar, ueberspringe: {extracted_dir} ({exc})")
+        return None
+
+    print(f"Health-Connect-ZIP entpackt: {zip_path}")
+    found = find_db_in_extracted_dir(extracted_dir)
+    if found:
+        print(f"Health-Connect-DB gefunden: {found}")
+        return found
+
+    print(f"Health-Connect-DB nach Extract nicht gefunden: {extracted_dir}")
+    return None
+
+
 def extract_zip_candidates(directory):
     if not safe_exists(directory):
         return None
 
-    zip_files = sorted(safe_glob(directory, "*.zip"), key=lambda path: path.stat().st_mtime, reverse=True)
-    if not zip_files:
+    zip_path = latest_zip_in_dir(directory)
+    if not zip_path:
         return None
 
-    extracted_dir = directory / "extracted"
-    try:
-        extracted_dir.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        print(f"Extract-Ziel nicht beschreibbar, ueberspringe: {extracted_dir} ({exc})")
-        return None
-    for zip_path in zip_files:
-        print(f"Entpacke Health-Connect-ZIP: {zip_path}")
-        try:
-            with zipfile.ZipFile(zip_path, "r") as archive:
-                archive.extractall(extracted_dir)
-        except zipfile.BadZipFile:
-            print(f"Ungueltige ZIP-Datei, ueberspringe: {zip_path}")
-            continue
-
-        found = find_db_in_dir(directory)
-        if found:
-            return found
-
-    return None
+    return extract_health_zip(zip_path, directory, f"Keine entpackte DB gefunden, entpacke ZIP: {zip_path}")
 
 
 def find_health_db():
@@ -229,13 +281,38 @@ def find_health_db():
             print(f"Pfad nicht vorhanden, ueberspringe: {directory}")
             continue
 
-        found = find_db_in_dir(directory)
-        if found:
-            return found
+        newest_zip = latest_zip_in_dir(directory)
+        existing_db = find_db_in_dir(directory)
+        print(f"Pruefe Health-Connect-Verzeichnis: {directory}")
+        if newest_zip:
+            print(f"Neueste ZIP: {newest_zip} ({path_modified_at(newest_zip)})")
+        else:
+            print("Neueste ZIP: keine gefunden")
+        if existing_db:
+            print(f"Vorhandene DB: {existing_db} ({path_modified_at(existing_db)})")
+        else:
+            print("Vorhandene DB: keine gefunden")
 
-        found = extract_zip_candidates(directory)
-        if found:
-            return found
+        if newest_zip and is_zip_newer_than_db(newest_zip, existing_db):
+            found = extract_health_zip(
+                newest_zip,
+                directory,
+                f"Neuere ZIP gefunden, entpacke neu: {newest_zip}" if existing_db else f"Keine entpackte DB gefunden, entpacke ZIP: {newest_zip}",
+            )
+            if found:
+                return found
+
+        if existing_db:
+            if newest_zip:
+                print("Vorhandene entpackte DB ist aktuell.")
+            else:
+                print("Keine ZIP gefunden, nutze vorhandene DB.")
+            return existing_db
+
+        if newest_zip:
+            found = extract_zip_candidates(directory)
+            if found:
+                return found
 
     return None
 
