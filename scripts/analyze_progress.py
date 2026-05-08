@@ -1,6 +1,6 @@
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -123,6 +123,12 @@ def fetch_rows(con, table):
     return con.execute(f"SELECT * FROM {table} ORDER BY date").fetchall()
 
 
+def fetch_optional_rows(con, table):
+    if not table_exists(con, table):
+        return []
+    return fetch_rows(con, table)
+
+
 def fetch_import_runs(con):
     if not table_exists(con, "import_runs"):
         return []
@@ -199,6 +205,17 @@ def row_value(row, key):
     return row[key] if row and key in row.keys() else None
 
 
+def numeric_value(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def row_to_dict(row, fields):
     if not row:
         return {}
@@ -211,6 +228,50 @@ def composition_score(row):
 
 def measured_at_sort_value(row):
     return row_value(row, "measured_at") or f"{row_value(row, 'date')}T00:00:00"
+
+
+def collect_weight_candidates(day, body_row, health_row, composition_row):
+    candidates = []
+
+    def add_candidate(value, source, measured_at):
+        weight = numeric_value(value)
+        if weight is None or weight < 40 or weight > 200:
+            return
+        candidates.append(
+            {
+                "value": round(weight, 2),
+                "source": source,
+                "measured_at": measured_at or f"{day}T00:00:00",
+            }
+        )
+
+    add_candidate(row_value(body_row, "weight"), "body_metrics", f"{day}T00:00:00")
+    add_candidate(row_value(health_row, "weight_kg"), "health_connect", f"{day}T00:00:00")
+    composition_source = row_value(composition_row, "source") or "seca"
+    add_candidate(
+        row_value(composition_row, "weight_kg"),
+        composition_source,
+        row_value(composition_row, "measured_at") or f"{day}T00:00:00",
+    )
+    return candidates
+
+
+def select_latest_weight_candidate(candidates):
+    if not candidates:
+        return None
+    source_priority = {
+        "seca": 3,
+        "body_composition_measurements": 3,
+        "health_connect": 2,
+        "body_metrics": 1,
+    }
+    return max(
+        candidates,
+        key=lambda candidate: (
+            candidate.get("measured_at") or "",
+            source_priority.get(candidate.get("source"), 3),
+        ),
+    )
 
 
 def consolidate_composition_by_day(rows):
@@ -312,6 +373,163 @@ def serialize_workouts(rows):
     ]
 
 
+def date_range(start_date, end_date):
+    start = date.fromisoformat(start_date)
+    end = date.fromisoformat(end_date)
+    days = []
+    current = start
+    while current <= end:
+        days.append(current.isoformat())
+        current += timedelta(days=1)
+    return days
+
+
+def build_nutrition_analysis(nutrition, meal_summary, nutrition_entries, current_weight):
+    nutrition_dates = sorted(row["date"] for row in nutrition if row_value(row, "date"))
+    if not nutrition_dates:
+        return {
+            "period_days": 7,
+            "days": [],
+            "meal_summary": [],
+            "top_products": [],
+            "macro_averages": {},
+            "calorie_goal_comparison": {},
+            "data_quality": {
+                "daily_nutrition_days": 0,
+                "meal_summary_rows": 0,
+                "nutrition_entry_rows": 0,
+                "missing_days": [],
+                "note": "Keine Yazio-Tagesdaten vorhanden.",
+            },
+        }
+
+    end_day = nutrition_dates[-1]
+    start_day = (date.fromisoformat(end_day) - timedelta(days=6)).isoformat()
+    period_dates = date_range(start_day, end_day)
+    period_set = set(period_dates)
+
+    nutrition_7 = [row for row in nutrition if row["date"] in period_set]
+    meal_7 = [row for row in meal_summary if row_value(row, "date") in period_set]
+    entries_7 = [row for row in nutrition_entries if row_value(row, "date") in period_set]
+    missing_days = [day for day in period_dates if day not in {row["date"] for row in nutrition_7}]
+
+    days = []
+    high_calorie_days = []
+    low_calorie_days = []
+    for row in nutrition_7:
+        calories = row_value(row, "calories")
+        energy_goal = row_value(row, "energy_goal")
+        delta = (
+            round(calories - energy_goal, 2)
+            if isinstance(calories, (int, float)) and isinstance(energy_goal, (int, float))
+            else None
+        )
+        if delta is not None and delta > 0:
+            high_calorie_days.append(row["date"])
+        if delta is not None and delta < -300:
+            low_calorie_days.append(row["date"])
+        days.append(
+            {
+                "date": row["date"],
+                "calories": calories,
+                "energy_goal": energy_goal,
+                "protein": row_value(row, "protein"),
+                "fat": row_value(row, "fat"),
+                "carbs": row_value(row, "carbs"),
+                "delta_vs_goal": delta,
+            }
+        )
+
+    meal_totals = {}
+    for row in meal_7:
+        meal = row_value(row, "meal") or "unbekannt"
+        item = meal_totals.setdefault(meal, {"meal": meal, "calories": 0, "days": set()})
+        item["calories"] += row_value(row, "calories") or 0
+        item["days"].add(row["date"])
+    meal_summary_result = []
+    for item in meal_totals.values():
+        day_count = len(item["days"]) or 1
+        meal_summary_result.append(
+            {
+                "meal": item["meal"],
+                "calories_total": round(item["calories"], 2),
+                "avg_calories_on_days_with_data": round(item["calories"] / day_count, 2),
+                "days_with_data": day_count,
+            }
+        )
+    meal_summary_result.sort(key=lambda item: item["calories_total"], reverse=True)
+
+    product_totals = {}
+    for row in entries_7:
+        product = (row_value(row, "product") or "").strip()
+        if not product:
+            continue
+        item = product_totals.setdefault(
+            product,
+            {
+                "product": product,
+                "calories_total": 0,
+                "protein_total": 0,
+                "fat_total": 0,
+                "carbs_total": 0,
+            },
+        )
+        item["calories_total"] += row_value(row, "calories_total") or 0
+        item["protein_total"] += row_value(row, "protein_total") or 0
+        item["fat_total"] += row_value(row, "fat_total") or 0
+        item["carbs_total"] += row_value(row, "carbs_total") or 0
+    top_products = sorted(product_totals.values(), key=lambda item: item["calories_total"], reverse=True)[:15]
+    for item in top_products:
+        for key in ["calories_total", "protein_total", "fat_total", "carbs_total"]:
+            item[key] = round(item[key], 2)
+
+    avg_calories_7d = avg([row_value(row, "calories") for row in nutrition_7])
+    avg_energy_goal_7d = avg([row_value(row, "energy_goal") for row in nutrition_7])
+    avg_delta_vs_goal_7d = (
+        round(avg_calories_7d - avg_energy_goal_7d, 2)
+        if avg_calories_7d is not None and avg_energy_goal_7d is not None
+        else None
+    )
+    avg_protein_7d = avg([row_value(row, "protein") for row in nutrition_7])
+    protein_g_per_kg = (
+        round(avg_protein_7d / current_weight, 2)
+        if avg_protein_7d is not None and current_weight
+        else None
+    )
+
+    return {
+        "period_days": 7,
+        "start": start_day,
+        "end": end_day,
+        "days": days,
+        "meal_summary": meal_summary_result,
+        "top_products": top_products,
+        "macro_averages": {
+            "avg_calories_7d": avg_calories_7d,
+            "avg_energy_goal_7d": avg_energy_goal_7d,
+            "avg_delta_vs_goal_7d": avg_delta_vs_goal_7d,
+            "avg_protein_7d": avg_protein_7d,
+            "avg_carbs_7d": avg([row_value(row, "carbs") for row in nutrition_7]),
+            "avg_fat_7d": avg([row_value(row, "fat") for row in nutrition_7]),
+            "protein_g_per_kg": protein_g_per_kg,
+        },
+        "calorie_goal_comparison": {
+            "high_calorie_days": high_calorie_days,
+            "low_calorie_days": low_calorie_days,
+            "missing_days": missing_days,
+            "top_meals_by_calories": meal_summary_result[:5],
+            "top_products_by_calories": top_products[:5],
+        },
+        "data_quality": {
+            "daily_nutrition_days": len(nutrition_7),
+            "meal_summary_rows": len(meal_7),
+            "nutrition_entry_rows": len(entries_7),
+            "has_product_data": bool(top_products),
+            "missing_days": missing_days,
+        },
+    }
+
+
 def build_series(dates, nutrition, body, health, composition):
     nutrition_by_date = rows_by_date(nutrition)
     body_by_date = rows_by_date(body)
@@ -324,11 +542,10 @@ def build_series(dates, nutrition, body, health, composition):
         body_row = body_by_date.get(day)
         health_row = health_by_date.get(day)
         composition_row = composition_by_date.get(day)
-        weight = row_value(body_row, "weight")
-        if weight is None:
-            weight = row_value(health_row, "weight_kg")
-        if weight is None:
-            weight = row_value(composition_row, "weight_kg")
+        weight_candidate = select_latest_weight_candidate(
+            collect_weight_candidates(day, body_row, health_row, composition_row)
+        )
+        weight = weight_candidate["value"] if weight_candidate else None
         body_fat = row_value(composition_row, "body_fat_percent")
         if body_fat is None:
             body_fat = row_value(health_row, "body_fat_percent")
@@ -346,6 +563,8 @@ def build_series(dates, nutrition, body, health, composition):
                 "steps": body_row["steps"] if body_row else None,
                 "weight": weight,
                 "weight_kg": weight,
+                "weight_source": weight_candidate["source"] if weight_candidate else None,
+                "weight_measured_at": weight_candidate["measured_at"] if weight_candidate else None,
                 "training": body_row["training"] if body_row else None,
                 "creatine": body_row["creatine"] if body_row else None,
                 "coffee_oat_milk_ml": body_row["coffee_oat_milk_ml"] if body_row else None,
@@ -396,6 +615,8 @@ def main():
         body = fetch_rows(con, "body_metrics")
         health = fetch_rows(con, "health_daily") if table_exists(con, "health_daily") else []
         composition = fetch_body_composition(con)
+        meal_summary = fetch_optional_rows(con, "meal_summary")
+        nutrition_entries = fetch_optional_rows(con, "nutrition_entries")
         import_runs = fetch_import_runs(con)
         workouts = fetch_workout_sessions(con)
 
@@ -423,8 +644,9 @@ def main():
         print(f"Keine Daten gefunden. Geschrieben: {OUTPUT_PATH}")
         return
 
-    current_weight = latest_non_null(body, "weight")
-    start_weight = first_non_null(body, "weight")
+    series_data = build_series(all_dates, nutrition, body, health, composition)
+    current_weight = latest_non_null(series_data, "weight")
+    start_weight = first_non_null(series_data, "weight")
     weight_change = (
         round(current_weight - start_weight, 2)
         if current_weight is not None and start_weight is not None
@@ -432,6 +654,7 @@ def main():
     )
 
     latest_body_7 = latest_window(body, 7)
+    latest_series_7 = latest_window(series_data, 7)
     latest_nutrition_7 = latest_window(nutrition, 7)
     latest_nutrition_14 = latest_window(nutrition, 14)
     latest_nutrition_30 = latest_window(nutrition, 30)
@@ -454,7 +677,7 @@ def main():
 
     coffee_oat_milk_ml_7 = sum_values([row["coffee_oat_milk_ml"] for row in latest_body_7]) or 0
     oat_milk_calories_7 = round(coffee_oat_milk_ml_7 * OAT_MILK_KCAL_PER_100_ML / 100, 2)
-    series_data = build_series(all_dates, nutrition, body, health, composition)
+    nutrition_analysis = build_nutrition_analysis(nutrition, meal_summary, nutrition_entries, current_weight)
 
     metrics = {
         "status": "ok",
@@ -484,7 +707,11 @@ def main():
             "start": start_weight,
             "current": current_weight,
             "change": weight_change,
-            "avg_7_days": avg([row["weight"] for row in latest_body_7]),
+            "avg_7_days": avg([row["weight"] for row in latest_series_7]),
+            "current_source": latest_non_null(series_data, "weight_source"),
+            "current_measured_at": latest_non_null(series_data, "weight_measured_at"),
+            "start_source": first_non_null(series_data, "weight_source"),
+            "start_measured_at": first_non_null(series_data, "weight_measured_at"),
         },
         "creatine": {
             "active_latest": latest_non_null(body, "creatine"),
@@ -510,6 +737,7 @@ def main():
         "source_status": serialize_import_runs(import_runs),
         "workouts": serialize_workouts(workouts),
         "body_composition": serialize_composition(composition),
+        "nutrition_analysis": nutrition_analysis,
         "series": series_data,
     }
 

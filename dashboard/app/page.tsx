@@ -307,6 +307,29 @@ function latestRowWithNumber(rows: DailyRow[], key: string) {
   return null;
 }
 
+function weightSourceName(source: unknown) {
+  if (source === "seca") return "seca";
+  if (source === "health_connect") return "Health Connect";
+  if (source === "body_metrics") return "manuell/body_metrics";
+  return "unbekannt";
+}
+
+function weightHint(row: DailyRow | null, fallback: Record<string, any>, outsideRange: boolean) {
+  const source = row?.weight_source ?? fallback?.current_source;
+  const measuredAt = row?.weight_measured_at ?? fallback?.current_measured_at;
+  const parts = [];
+  if (outsideRange) {
+    parts.push("letzter verfügbarer Wert");
+  }
+  if (source) {
+    parts.push(`Quelle: ${weightSourceName(source)}`);
+  }
+  if (measuredAt) {
+    parts.push(formatDateTime(measuredAt));
+  }
+  return parts.length > 0 ? parts.join(" · ") : undefined;
+}
+
 function numbersInOrder(rows: DailyRow[], key: string) {
   return rows
     .map((row) => row[key])
@@ -721,6 +744,38 @@ function WorkoutsPanel({ workouts, selectedRows }: { workouts: DailyRow[]; selec
   );
 }
 
+function NutritionRecommendation({ recommendation }: { recommendation: Record<string, any> | undefined }) {
+  if (!recommendation || typeof recommendation !== "object") {
+    return null;
+  }
+  const observations = Array.isArray(recommendation.observations) ? recommendation.observations.slice(0, 4) : [];
+  const recommendations = Array.isArray(recommendation.recommendations)
+    ? recommendation.recommendations.slice(0, 4)
+    : [];
+  return (
+    <article className="panel wide">
+      <span>Ernährungsempfehlung</span>
+      <p>{recommendation.summary ?? "Noch keine Ernährungsempfehlung vorhanden."}</p>
+      {observations.length > 0 ? (
+        <ul>
+          {observations.map((item, index) => (
+            <li key={`nutrition-observation-${index}`}>{item}</li>
+          ))}
+        </ul>
+      ) : null}
+      {recommendations.length > 0 ? (
+        <ul>
+          {recommendations.map((item, index) => (
+            <li key={`nutrition-recommendation-${index}`}>{item}</li>
+          ))}
+        </ul>
+      ) : null}
+      {recommendation.next_meal_focus ? <p><strong>{recommendation.next_meal_focus}</strong></p> : null}
+      {recommendation.data_quality_note ? <small>{recommendation.data_quality_note}</small> : null}
+    </article>
+  );
+}
+
 export default async function Home({ searchParams }: { searchParams?: SearchParams }) {
   const params = await Promise.resolve(searchParams ?? {});
   const range = normalizeRange(params.range);
@@ -738,8 +793,10 @@ export default async function Home({ searchParams }: { searchParams?: SearchPara
     ? "Benutzerdefiniert"
     : RANGE_OPTIONS.find((option) => option.value === range)?.label ?? "7 Tage";
 
-  const weightInRange = latestNumber(selectedRows, "weight");
-  const currentWeight = weightInRange ?? latestNumber(series, "weight") ?? metrics.weight?.current;
+  const weightRowInRange = latestRowWithNumber(selectedRows, "weight");
+  const weightFallbackRow = latestRowWithNumber(series, "weight");
+  const selectedWeightRow = weightRowInRange ?? weightFallbackRow;
+  const currentWeight = selectedWeightRow?.weight ?? metrics.weight?.current ?? null;
   const weightValues = numbersInOrder(selectedRows, "weight");
   const weightChange =
     weightValues.length >= 2 ? weightValues[weightValues.length - 1] - weightValues[0] : null;
@@ -808,7 +865,7 @@ export default async function Home({ searchParams }: { searchParams?: SearchPara
         <MetricCard
           label="Gewicht aktuell"
           value={formatNumber(currentWeight, " kg")}
-          hint={weightInRange === null && currentWeight !== null ? "letzter verfügbarer Wert" : undefined}
+          hint={weightHint(selectedWeightRow, metrics.weight ?? {}, !weightRowInRange && currentWeight !== null)}
         />
         <MetricCard
           label="Gewichtsveränderung"
@@ -967,6 +1024,7 @@ export default async function Home({ searchParams }: { searchParams?: SearchPara
             <p>Keine Auffälligkeiten gemeldet.</p>
           )}
         </article>
+        <NutritionRecommendation recommendation={report.nutrition_recommendation} />
       </section>
     </main>
   );

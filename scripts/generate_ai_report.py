@@ -38,6 +38,75 @@ def metric(metrics, *path):
     return value
 
 
+def build_fallback_nutrition_recommendation(metrics):
+    nutrition = metrics.get("nutrition_analysis") if isinstance(metrics, dict) else {}
+    if not isinstance(nutrition, dict) or not nutrition.get("days"):
+        return {
+            "summary": "Keine belastbaren Yazio-Ernaehrungsdaten fuer die letzten Tage vorhanden.",
+            "observations": [],
+            "recommendations": ["Yazio-Daten weiter importieren, damit Mahlzeiten und Muster auswertbar werden."],
+            "next_meal_focus": "Naechste Mahlzeit normal dokumentieren.",
+            "data_quality_note": "nutrition_analysis enthaelt keine Tagesdaten.",
+        }
+
+    macro = nutrition.get("macro_averages", {})
+    comparison = nutrition.get("calorie_goal_comparison", {})
+    quality = nutrition.get("data_quality", {})
+    top_products = nutrition.get("top_products", [])
+    meals = nutrition.get("meal_summary", [])
+    observations = []
+    recommendations = []
+
+    protein_gkg = macro.get("protein_g_per_kg")
+    avg_delta = macro.get("avg_delta_vs_goal_7d")
+    avg_protein = macro.get("avg_protein_7d")
+
+    if isinstance(avg_delta, (int, float)):
+        if avg_delta < -300:
+            observations.append(f"Im Schnitt liegst du etwa {abs(round(avg_delta))} kcal unter dem Yazio-Ziel.")
+            recommendations.append("Defizit nicht aggressiv weiter erhoehen; zuerst Protein und Mahlzeitenqualitaet stabil halten.")
+        elif avg_delta > 200:
+            observations.append(f"Im Schnitt liegst du etwa {round(avg_delta)} kcal ueber dem Yazio-Ziel.")
+            recommendations.append("Pruefe die groessten Mahlzeiten und Kalorientreiber, bevor du pauschal Portionen kuerzt.")
+        else:
+            observations.append("Die Kalorien liegen im Schnitt nah am Yazio-Ziel.")
+
+    if isinstance(protein_gkg, (int, float)) and protein_gkg < 1.6:
+        observations.append(f"Protein liegt bei ca. {protein_gkg} g/kg.")
+        recommendations.append("Protein priorisieren, zum Beispiel die naechste Mahlzeit bewusst proteinreich planen.")
+    elif isinstance(avg_protein, (int, float)):
+        observations.append(f"Protein liegt im 7-Tage-Schnitt bei ca. {round(avg_protein)} g.")
+
+    if top_products:
+        names = [item["product"] for item in top_products[:3] if item.get("product")]
+        if names:
+            observations.append("Top-Kalorientreiber: " + ", ".join(names) + ".")
+            recommendations.append("Bei diesen Produkten Portionen oder Haeufigkeit zuerst pruefen.")
+
+    if meals:
+        top_meal = meals[0]
+        observations.append(
+            f"Kalorienreichste Mahlzeitengruppe: {top_meal.get('meal')} mit ca. {round(top_meal.get('calories_total') or 0)} kcal im Zeitraum."
+        )
+        recommendations.append(f"Naechster Hebel: {top_meal.get('meal')} etwas planbarer machen.")
+
+    if not recommendations:
+        recommendations.append("Aktuellen Kurs halten und die naechsten Tage weiter sauber dokumentieren.")
+
+    missing_days = quality.get("missing_days") or []
+    data_quality_note = "Produktdaten vorhanden." if quality.get("has_product_data") else "Keine Produktdetails vorhanden; Empfehlung basiert auf Tages- und Mahlzeitensummen."
+    if missing_days:
+        data_quality_note += f" Fehlende Tage im Zeitraum: {', '.join(missing_days)}."
+
+    return {
+        "summary": "Ernaehrung der letzten 7 Tage lokal aus Yazio-Daten ausgewertet.",
+        "observations": observations[:5],
+        "recommendations": recommendations[:5],
+        "next_meal_focus": recommendations[0],
+        "data_quality_note": data_quality_note,
+    }
+
+
 def fallback_report(metrics):
     flags = []
     focus = "Daten weiter pflegen und Tagesroutine stabil halten."
@@ -97,6 +166,7 @@ def fallback_report(metrics):
         "recommendation": recommendation,
         "focus_today": focus,
         "risk_flags": flags,
+        "nutrition_recommendation": build_fallback_nutrition_recommendation(metrics),
         "confidence": "medium" if metrics.get("status") == "ok" else "low",
     }
 
@@ -110,9 +180,34 @@ def call_openai(metrics, api_key):
             "recommendation": {"type": "string"},
             "focus_today": {"type": "string"},
             "risk_flags": {"type": "array", "items": {"type": "string"}},
+            "nutrition_recommendation": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "summary": {"type": "string"},
+                    "observations": {"type": "array", "items": {"type": "string"}},
+                    "recommendations": {"type": "array", "items": {"type": "string"}},
+                    "next_meal_focus": {"type": "string"},
+                    "data_quality_note": {"type": "string"},
+                },
+                "required": [
+                    "summary",
+                    "observations",
+                    "recommendations",
+                    "next_meal_focus",
+                    "data_quality_note",
+                ],
+            },
             "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
         },
-        "required": ["summary", "recommendation", "focus_today", "risk_flags", "confidence"],
+        "required": [
+            "summary",
+            "recommendation",
+            "focus_today",
+            "risk_flags",
+            "nutrition_recommendation",
+            "confidence",
+        ],
     }
     payload = {
         "model": os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
@@ -122,7 +217,18 @@ def call_openai(metrics, api_key):
                 "content": (
                     "Du bist ein vorsichtiger Fitness- und Ernaehrungscoach. "
                     "Nutze Yazio-, Body-Log- und Health-Connect-Kontext. "
-                    "Gib konkrete, knappe Empfehlungen auf Deutsch. Keine medizinischen Diagnosen."
+                    "Gib konkrete, knappe Empfehlungen auf Deutsch. Keine medizinischen Diagnosen. "
+                    "Analysiere die Ernaehrung der letzten Tage auf Basis von nutrition_analysis: "
+                    "Kalorienziel, Protein, Makros, Mahlzeiten und haeufige oder kalorienreiche Produkte. "
+                    "Erfinde keine Lebensmittel, die nicht in den Daten stehen. Wenn Produktdaten fehlen, "
+                    "sage transparent, dass nur Tages- oder Mahlzeitensummen verfuegbar sind. "
+                    "Nenne konkrete Produkte oder Lebensmittel nur, wenn sie in nutrition_analysis.top_products "
+                    "oder den kompakten Produktdaten enthalten sind; sonst nutze neutrale Kategorien wie "
+                    "proteinreiche Komponente, kleinere Portion oder leichtere Beilage. "
+                    "Verwende keine Beispiel-Lebensmittel mit 'z.B.' oder Klammerbeispielen, wenn diese nicht "
+                    "explizit in den Daten vorkommen. next_meal_focus soll ebenfalls ohne erfundene Beispiele auskommen. "
+                    "Benenne pragmatisch, was bleiben kann, was reduziert oder ersetzt werden sollte, "
+                    "wo Protein fehlt, welche Mahlzeit Kalorien treibt und den naechsten sinnvollen Schritt."
                 ),
             },
             {
