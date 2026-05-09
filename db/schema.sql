@@ -102,6 +102,81 @@ CREATE TABLE IF NOT EXISTS import_runs (
 CREATE INDEX IF NOT EXISTS idx_import_runs_source_finished
 ON import_runs (source, finished_at);
 
+CREATE TABLE IF NOT EXISTS import_diagnostics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    import_run_id INTEGER,
+    source TEXT NOT NULL,
+    diagnostic_type TEXT NOT NULL,
+    record_type TEXT,
+    app_info_id INTEGER,
+    app_name TEXT,
+    package_name TEXT,
+    table_name TEXT,
+    min_date TEXT,
+    max_date TEXT,
+    max_measured_at TEXT,
+    max_source_modified_at TEXT,
+    row_count INTEGER,
+    severity TEXT NOT NULL DEFAULT 'info',
+    message TEXT,
+    details_json TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_import_diagnostics_source_type
+ON import_diagnostics (source, diagnostic_type, record_type, created_at);
+
+CREATE TABLE IF NOT EXISTS health_connect_weight_records (
+    source_row_id INTEGER PRIMARY KEY,
+    uuid TEXT,
+    app_info_id INTEGER,
+    app_name TEXT,
+    package_name TEXT,
+    date TEXT NOT NULL,
+    measured_at TEXT,
+    source_modified_at TEXT,
+    weight_kg REAL NOT NULL,
+    zone_offset_seconds INTEGER,
+    imported_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_health_connect_weight_records_date
+ON health_connect_weight_records (date, measured_at);
+
+CREATE TABLE IF NOT EXISTS health_connect_body_fat_records (
+    source_row_id INTEGER PRIMARY KEY,
+    uuid TEXT,
+    app_info_id INTEGER,
+    app_name TEXT,
+    package_name TEXT,
+    date TEXT NOT NULL,
+    measured_at TEXT,
+    source_modified_at TEXT,
+    body_fat_percent REAL NOT NULL,
+    zone_offset_seconds INTEGER,
+    imported_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_health_connect_body_fat_records_date
+ON health_connect_body_fat_records (date, measured_at);
+
+CREATE TABLE IF NOT EXISTS health_connect_basal_metabolic_rate_records (
+    source_row_id INTEGER PRIMARY KEY,
+    uuid TEXT,
+    app_info_id INTEGER,
+    app_name TEXT,
+    package_name TEXT,
+    date TEXT NOT NULL,
+    measured_at TEXT,
+    source_modified_at TEXT,
+    basal_metabolic_rate_kcal REAL NOT NULL,
+    zone_offset_seconds INTEGER,
+    imported_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_health_connect_bmr_records_date
+ON health_connect_basal_metabolic_rate_records (date, measured_at);
+
 CREATE TABLE IF NOT EXISTS body_composition_measurements (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     measured_at TEXT,

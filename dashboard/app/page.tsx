@@ -748,30 +748,27 @@ function NutritionRecommendation({ recommendation }: { recommendation: Record<st
   if (!recommendation || typeof recommendation !== "object") {
     return null;
   }
-  const observations = Array.isArray(recommendation.observations) ? recommendation.observations.slice(0, 4) : [];
-  const recommendations = Array.isArray(recommendation.recommendations)
-    ? recommendation.recommendations.slice(0, 4)
-    : [];
+  const basis = Array.isArray(recommendation.basis) ? recommendation.basis.slice(0, 3) : [];
+  const hints = Array.isArray(recommendation.hints) ? recommendation.hints.slice(0, 5) : [];
   return (
     <article className="panel wide">
-      <span>Ernährungsempfehlung</span>
+      <span>{recommendation.title ?? "Ernährungs-Empfehlung auf Basis der letzten Tage"}</span>
       <p>{recommendation.summary ?? "Noch keine Ernährungsempfehlung vorhanden."}</p>
-      {observations.length > 0 ? (
+      {basis.length > 0 ? (
         <ul>
-          {observations.map((item, index) => (
-            <li key={`nutrition-observation-${index}`}>{item}</li>
+          {basis.map((item, index) => (
+            <li key={`nutrition-basis-${index}`}>{item}</li>
           ))}
         </ul>
       ) : null}
-      {recommendations.length > 0 ? (
+      {hints.length > 0 ? (
         <ul>
-          {recommendations.map((item, index) => (
-            <li key={`nutrition-recommendation-${index}`}>{item}</li>
+          {hints.map((item, index) => (
+            <li key={`nutrition-hint-${index}`}>{item}</li>
           ))}
         </ul>
       ) : null}
-      {recommendation.next_meal_focus ? <p><strong>{recommendation.next_meal_focus}</strong></p> : null}
-      {recommendation.data_quality_note ? <small>{recommendation.data_quality_note}</small> : null}
+      {recommendation.medical_note ? <small>{recommendation.medical_note}</small> : null}
     </article>
   );
 }
@@ -786,6 +783,9 @@ export default async function Home({ searchParams }: { searchParams?: SearchPara
   const selectedRows = selectRows(series, range, params.from, params.to);
   const workouts = Array.isArray(metrics.workouts) ? metrics.workouts : [];
   const sourceStatus = metrics.source_status ?? {};
+  const importWarnings = Array.isArray(metrics.source_freshness?.health_connect?.warnings)
+    ? metrics.source_freshness.health_connect.warnings
+    : [];
   const energyBalance = calculateEstimatedEnergyBalance(selectedRows, series);
   const yazioPlanBalance = calculateYazioPlanBalance(selectedRows);
   const composition = metrics.body_composition ?? {};
@@ -797,6 +797,10 @@ export default async function Home({ searchParams }: { searchParams?: SearchPara
   const weightFallbackRow = latestRowWithNumber(series, "weight");
   const selectedWeightRow = weightRowInRange ?? weightFallbackRow;
   const currentWeight = selectedWeightRow?.weight ?? metrics.weight?.current ?? null;
+  const selectedWeightHint = [
+    weightHint(selectedWeightRow, metrics.weight ?? {}, !weightRowInRange && currentWeight !== null),
+    metrics.weight?.selected_weight_reason,
+  ].filter(Boolean).join(" · ");
   const weightValues = numbersInOrder(selectedRows, "weight");
   const weightChange =
     weightValues.length >= 2 ? weightValues[weightValues.length - 1] - weightValues[0] : null;
@@ -859,13 +863,27 @@ export default async function Home({ searchParams }: { searchParams?: SearchPara
 
       <DataStatus sourceStatus={sourceStatus} />
 
+      {importWarnings.length > 0 ? (
+        <section className="warning-list" aria-label="Import-Diagnosen">
+          {importWarnings.slice(0, 3).map((warning: Record<string, any>, index: number) => (
+            <article className="warning-card" key={`${warning.record_type}-${index}`}>
+              <strong>{warning.record_type ?? "Health Connect"}</strong>
+              <p>{warning.message ?? "Teilbereich ist veraltet oder unvollständig."}</p>
+              {warning.max_measured_at || warning.max_date ? (
+                <small>Letzter Wert: {formatDateTime(warning.max_measured_at) || formatDate(warning.max_date)}</small>
+              ) : null}
+            </article>
+          ))}
+        </section>
+      ) : null}
+
       <SecaUpload />
 
       <section className="metrics-grid" aria-label="Kennzahlen">
         <MetricCard
           label="Gewicht aktuell"
           value={formatNumber(currentWeight, " kg")}
-          hint={weightHint(selectedWeightRow, metrics.weight ?? {}, !weightRowInRange && currentWeight !== null)}
+          hint={selectedWeightHint}
         />
         <MetricCard
           label="Gewichtsveränderung"
@@ -1024,7 +1042,7 @@ export default async function Home({ searchParams }: { searchParams?: SearchPara
             <p>Keine Auffälligkeiten gemeldet.</p>
           )}
         </article>
-        <NutritionRecommendation recommendation={report.nutrition_recommendation} />
+        <NutritionRecommendation recommendation={metrics.nutrition_recommendation ?? report.nutrition_recommendation} />
       </section>
     </main>
   );

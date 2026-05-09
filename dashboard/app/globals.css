@@ -30,6 +30,101 @@ body {
     sans-serif;
 }
 
+.app-content {
+  margin-left: 232px;
+}
+
+.sidebar {
+  background: rgba(16, 17, 20, 0.96);
+  border-right: 1px solid var(--line);
+  bottom: 0;
+  left: 0;
+  padding: 24px 18px;
+  position: fixed;
+  top: 0;
+  width: 232px;
+  z-index: 20;
+}
+
+.brand {
+  color: var(--text);
+  display: block;
+  font-size: 1rem;
+  font-weight: 800;
+  margin-bottom: 24px;
+  text-decoration: none;
+}
+
+.sidebar nav,
+.mobile-nav nav {
+  display: grid;
+  gap: 8px;
+}
+
+.sidebar nav a,
+.mobile-nav nav a {
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--muted);
+  font-weight: 800;
+  padding: 10px 12px;
+  text-decoration: none;
+}
+
+.sidebar nav a:hover,
+.mobile-nav nav a:hover {
+  background: rgba(88, 214, 141, 0.08);
+  border-color: rgba(88, 214, 141, 0.28);
+  color: var(--text);
+}
+
+.mobile-nav {
+  display: none;
+}
+
+.mobile-nav summary {
+  align-items: center;
+  background: rgba(24, 27, 32, 0.96);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+  display: grid;
+  gap: 4px;
+  height: 42px;
+  justify-items: center;
+  left: 16px;
+  list-style: none;
+  padding: 10px;
+  position: fixed;
+  top: 14px;
+  width: 46px;
+  z-index: 30;
+}
+
+.mobile-nav summary::-webkit-details-marker {
+  display: none;
+}
+
+.mobile-nav summary span {
+  background: var(--text);
+  border-radius: 999px;
+  display: block;
+  height: 2px;
+  width: 20px;
+}
+
+.mobile-nav nav {
+  background: rgba(16, 17, 20, 0.98);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  left: 16px;
+  padding: 12px;
+  position: fixed;
+  top: 62px;
+  width: min(280px, calc(100vw - 32px));
+  z-index: 30;
+}
+
 .shell {
   width: min(1180px, calc(100vw - 32px));
   margin: 0 auto;
@@ -127,7 +222,8 @@ h1 {
 }
 
 .date-form input,
-.date-form button {
+.date-form button,
+.date-form select {
   background: rgba(24, 27, 32, 0.78);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -140,6 +236,10 @@ h1 {
 .date-form button {
   cursor: pointer;
   font-weight: 700;
+}
+
+.source-filter {
+  margin-bottom: 18px;
 }
 
 .metrics-grid {
@@ -420,6 +520,67 @@ h1 {
   margin-top: 4px;
 }
 
+.warning-list {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.warning-card {
+  background: rgba(242, 201, 76, 0.12);
+  border: 1px solid rgba(242, 201, 76, 0.36);
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+
+.warning-card p {
+  color: #f7e6a1;
+  margin: 6px 0;
+}
+
+.warning-card small {
+  color: var(--muted);
+}
+
+.table-panel {
+  background: rgba(24, 27, 32, 0.92);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-top: 14px;
+  padding: 18px;
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+table {
+  border-collapse: collapse;
+  min-width: 920px;
+  width: 100%;
+}
+
+th,
+td {
+  border-bottom: 1px solid rgba(168, 176, 189, 0.16);
+  padding: 10px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+
+th {
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+}
+
+td {
+  color: #dbe2ea;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  max-width: 320px;
+}
+
 .panel .source-line {
   color: var(--muted);
   font-size: 0.95rem;
@@ -553,6 +714,22 @@ h1 {
 }
 
 @media (max-width: 820px) {
+  .app-content {
+    margin-left: 0;
+  }
+
+  .sidebar {
+    display: none;
+  }
+
+  .mobile-nav {
+    display: block;
+  }
+
+  .shell {
+    padding-top: 76px;
+  }
+
   .topbar {
     align-items: stretch;
     flex-direction: column;

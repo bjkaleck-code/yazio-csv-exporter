@@ -32,6 +32,17 @@ WORKOUT_SESSION_MIGRATIONS = [
     ("estimated_met", "REAL"),
     ("estimated_kcal_source", "TEXT"),
 ]
+RECORD_TYPE_TABLES = {
+    "steps": "steps_record_table",
+    "distance": "distance_record_table",
+    "active_kcal": "active_calories_burned_record_table",
+    "total_kcal": "total_calories_burned_record_table",
+    "workouts": "exercise_session_record_table",
+    "weight": "weight_record_table",
+    "body_fat": "body_fat_record_table",
+    "sleep": "sleep_session_record_table",
+    "basal_metabolic_rate": "basal_metabolic_rate_record_table",
+}
 
 
 def iso_date_from_local_date(local_date):
@@ -101,7 +112,7 @@ def write_import_run(
     details=None,
     error_message=None,
 ):
-    con.execute(
+    cur = con.execute(
         """
         INSERT INTO import_runs (
             source, status, started_at, finished_at, source_path, source_modified_at,
@@ -125,6 +136,7 @@ def write_import_run(
             error_message,
         ),
     )
+    return cur.lastrowid
 
 
 def table_exists(con, table_name):
@@ -429,6 +441,283 @@ def read_application_info(con):
     return mapping
 
 
+def read_application_details(con):
+    table_name = "application_info_table"
+    if not table_exists(con, table_name):
+        return {}
+
+    result = {}
+    for row in con.execute(
+        """
+        SELECT row_id, package_name, app_name, record_types_used
+        FROM application_info_table
+        """
+    ):
+        result[row[0]] = {
+            "app_info_id": row[0],
+            "package_name": row[1],
+            "app_name": row[2],
+            "record_types_used": row[3],
+        }
+    return result
+
+
+def source_date_expr(table_alias):
+    return f"date('1970-01-01', '+' || {table_alias}.local_date || ' days')"
+
+
+def source_time_expr(table_alias, columns):
+    for column in ["time", "end_time", "start_time"]:
+        if column in columns:
+            return f"datetime({table_alias}.{column} / 1000, 'unixepoch')"
+    return "NULL"
+
+
+def source_modified_expr(table_alias, columns):
+    if "last_modified_time" in columns:
+        return f"datetime({table_alias}.last_modified_time / 1000, 'unixepoch')"
+    return "NULL"
+
+
+def health_connect_record_diagnostics(con):
+    app_details = read_application_details(con)
+    diagnostics = []
+    for record_type, table_name in RECORD_TYPE_TABLES.items():
+        if not table_exists(con, table_name):
+            diagnostics.append(
+                {
+                    "diagnostic_type": "record_type_status",
+                    "record_type": record_type,
+                    "table_name": table_name,
+                    "row_count": 0,
+                    "severity": "warning",
+                    "message": f"Health-Connect-Tabelle fehlt: {table_name}",
+                }
+            )
+            continue
+        columns = table_columns(con, table_name)
+        time_expr = source_time_expr("r", columns)
+        modified_expr = source_modified_expr("r", columns)
+        row = con.execute(
+            f"""
+            SELECT COUNT(*) AS row_count,
+                   MIN({source_date_expr('r')}) AS min_date,
+                   MAX({source_date_expr('r')}) AS max_date,
+                   MAX({time_expr}) AS max_measured_at,
+                   MAX({modified_expr}) AS max_source_modified_at
+            FROM {table_name} r
+            """
+        ).fetchone()
+        diagnostics.append(
+            {
+                "diagnostic_type": "record_type_status",
+                "record_type": record_type,
+                "table_name": table_name,
+                "row_count": row[0],
+                "min_date": row[1],
+                "max_date": row[2],
+                "max_measured_at": row[3],
+                "max_source_modified_at": row[4],
+                "severity": "info",
+                "message": None,
+            }
+        )
+        if "app_info_id" in columns:
+            for app_row in con.execute(
+                f"""
+                SELECT r.app_info_id,
+                       COUNT(*) AS row_count,
+                       MIN({source_date_expr('r')}) AS min_date,
+                       MAX({source_date_expr('r')}) AS max_date,
+                       MAX({time_expr}) AS max_measured_at,
+                       MAX({modified_expr}) AS max_source_modified_at
+                FROM {table_name} r
+                GROUP BY r.app_info_id
+                """
+            ):
+                app = app_details.get(app_row[0], {})
+                diagnostics.append(
+                    {
+                        "diagnostic_type": "record_type_app_status",
+                        "record_type": record_type,
+                        "table_name": table_name,
+                        "app_info_id": app_row[0],
+                        "app_name": app.get("app_name"),
+                        "package_name": app.get("package_name"),
+                        "row_count": app_row[1],
+                        "min_date": app_row[2],
+                        "max_date": app_row[3],
+                        "max_measured_at": app_row[4],
+                        "max_source_modified_at": app_row[5],
+                        "severity": "info",
+                        "message": None,
+                    }
+                )
+    return diagnostics
+
+
+def fitdays_weight_diagnostics(diagnostics, source_modified_at_value, data_end_date):
+    fitdays_rows = [
+        item
+        for item in diagnostics
+        if item.get("record_type") == "weight"
+        and item.get("diagnostic_type") == "record_type_app_status"
+        and (
+            str(item.get("app_name") or "").lower() == "fitdays"
+            or "fitdays" in str(item.get("package_name") or "").lower()
+        )
+    ]
+    if not fitdays_rows:
+        return [
+            {
+                "diagnostic_type": "source_warning",
+                "record_type": "weight",
+                "severity": "warning",
+                "message": "Fitdays als Quelle wurde in der exportierten Health-Connect-DB nicht erkannt.",
+            }
+        ]
+
+    latest = max(fitdays_rows, key=lambda item: item.get("max_measured_at") or item.get("max_date") or "")
+    max_date = latest.get("max_date")
+    max_measured_at = latest.get("max_measured_at")
+    warnings = [
+        {
+            "diagnostic_type": "source_note",
+            "record_type": "weight",
+            "app_info_id": latest.get("app_info_id"),
+            "app_name": latest.get("app_name"),
+            "package_name": latest.get("package_name"),
+            "max_date": max_date,
+            "max_measured_at": max_measured_at,
+            "max_source_modified_at": latest.get("max_source_modified_at"),
+            "row_count": latest.get("row_count"),
+            "severity": "info",
+            "message": f"Fitdays als Quelle erkannt, letzter exportierter Weight Record: {max_measured_at or max_date}.",
+        }
+    ]
+    export_date = (source_modified_at_value or data_end_date or "")[:10]
+    if max_date and export_date and max_date < export_date:
+        warnings.append(
+            {
+                "diagnostic_type": "source_warning",
+                "record_type": "weight",
+                "app_info_id": latest.get("app_info_id"),
+                "app_name": latest.get("app_name"),
+                "package_name": latest.get("package_name"),
+                "max_date": max_date,
+                "max_measured_at": max_measured_at,
+                "max_source_modified_at": latest.get("max_source_modified_at"),
+                "row_count": latest.get("row_count"),
+                "severity": "warning",
+                "message": (
+                    "Health-Connect-Export enthält für Gewicht/Fitdays keine Werte nach "
+                    f"{max_date}. Der Wert kann am Handy aktueller sein als die exportierte DB."
+                ),
+            }
+        )
+    return warnings
+
+
+def import_health_record_values(source_con, target_con, table_name, value_column, value_converter, target_table, target_value_column):
+    if not table_exists(source_con, table_name):
+        return 0
+    columns = table_columns(source_con, table_name)
+    required = {"row_id", "local_date", value_column}
+    if not required.issubset(set(columns)):
+        return 0
+
+    imported_at = utc_now()
+    select_columns = ["row_id", "uuid", "app_info_id", "local_date", value_column]
+    for optional in ["time", "last_modified_time", "zone_offset"]:
+        if optional in columns:
+            select_columns.append(optional)
+    app_details = read_application_details(source_con)
+    rows = []
+    for result in source_con.execute(f"SELECT {', '.join(select_columns)} FROM {table_name}"):
+        raw = dict(zip(select_columns, result))
+        value = raw.get(value_column)
+        if value is None:
+            continue
+        app = app_details.get(raw.get("app_info_id"), {})
+        rows.append(
+            (
+                raw.get("row_id"),
+                raw.get("uuid"),
+                raw.get("app_info_id"),
+                app.get("app_name"),
+                app.get("package_name"),
+                iso_date_from_local_date(raw.get("local_date")),
+                ms_to_iso(raw.get("time")),
+                ms_to_iso(raw.get("last_modified_time")),
+                round(value_converter(value), 2),
+                raw.get("zone_offset"),
+                imported_at,
+            )
+        )
+
+    if not rows:
+        return 0
+    target_con.executemany(
+        f"""
+        INSERT INTO {target_table} (
+            source_row_id, uuid, app_info_id, app_name, package_name, date,
+            measured_at, source_modified_at, {target_value_column},
+            zone_offset_seconds, imported_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(source_row_id) DO UPDATE SET
+            uuid = excluded.uuid,
+            app_info_id = excluded.app_info_id,
+            app_name = excluded.app_name,
+            package_name = excluded.package_name,
+            date = excluded.date,
+            measured_at = excluded.measured_at,
+            source_modified_at = excluded.source_modified_at,
+            {target_value_column} = excluded.{target_value_column},
+            zone_offset_seconds = excluded.zone_offset_seconds,
+            imported_at = excluded.imported_at
+        """,
+        rows,
+    )
+    return len(rows)
+
+
+def write_import_diagnostics(con, import_run_id, diagnostics):
+    now = utc_now()
+    con.executemany(
+        """
+        INSERT INTO import_diagnostics (
+            import_run_id, source, diagnostic_type, record_type, app_info_id,
+            app_name, package_name, table_name, min_date, max_date,
+            max_measured_at, max_source_modified_at, row_count, severity,
+            message, details_json, created_at
+        )
+        VALUES (?, 'health_connect', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                import_run_id,
+                item.get("diagnostic_type"),
+                item.get("record_type"),
+                item.get("app_info_id"),
+                item.get("app_name"),
+                item.get("package_name"),
+                item.get("table_name"),
+                item.get("min_date"),
+                item.get("max_date"),
+                item.get("max_measured_at"),
+                item.get("max_source_modified_at"),
+                item.get("row_count"),
+                item.get("severity", "info"),
+                item.get("message"),
+                json.dumps(item.get("details") or {}, ensure_ascii=False),
+                now,
+            )
+            for item in diagnostics
+        ],
+    )
+
+
 def import_basal_metabolic_rate(con, daily, app_info):
     table_name = "basal_metabolic_rate_record_table"
     if not table_exists(con, table_name):
@@ -723,11 +1012,11 @@ def upsert_health_daily(con, rows):
             total_kcal = excluded.total_kcal,
             workout_count = excluded.workout_count,
             workout_minutes = excluded.workout_minutes,
-            weight_kg = excluded.weight_kg,
-            body_fat_percent = excluded.body_fat_percent,
-            sleep_hours = excluded.sleep_hours,
-            basal_metabolic_rate_kcal = excluded.basal_metabolic_rate_kcal,
-            basal_metabolic_rate_source = excluded.basal_metabolic_rate_source,
+            weight_kg = COALESCE(excluded.weight_kg, health_daily.weight_kg),
+            body_fat_percent = COALESCE(excluded.body_fat_percent, health_daily.body_fat_percent),
+            sleep_hours = COALESCE(excluded.sleep_hours, health_daily.sleep_hours),
+            basal_metabolic_rate_kcal = COALESCE(excluded.basal_metabolic_rate_kcal, health_daily.basal_metabolic_rate_kcal),
+            basal_metabolic_rate_source = COALESCE(excluded.basal_metabolic_rate_source, health_daily.basal_metabolic_rate_source),
             workout_estimated_active_kcal = excluded.workout_estimated_active_kcal,
             workout_estimated_active_kcal_source = excluded.workout_estimated_active_kcal_source,
             effective_active_kcal = excluded.effective_active_kcal,
@@ -976,35 +1265,77 @@ def main():
 
     print(f"Health-Connect-DB gefunden: {source_db}")
     try:
+        with sqlite3.connect(source_db) as source_con:
+            diagnostics = health_connect_record_diagnostics(source_con)
         rows, sessions, app_source_column = read_health_daily(source_db)
+        source_modified = path_modified_at(source_db)
+        diagnostic_dates = [item.get("max_date") for item in diagnostics if item.get("max_date")]
         dates = [row["date"] for row in rows]
+        data_start = min(dates) if dates else None
+        data_end = max([*dates, *diagnostic_dates]) if [*dates, *diagnostic_dates] else None
+        warnings = fitdays_weight_diagnostics(diagnostics, source_modified, data_end)
+        diagnostics.extend(warnings)
         with connect_dashboard_db() as con:
             duplicate_sessions_removed = 0
+            health_record_rows = {}
             if rows:
                 upsert_health_daily(con, rows)
                 sync_body_metrics(con, rows)
             if sessions:
                 upsert_workout_sessions(con, sessions)
                 duplicate_sessions_removed = dedupe_existing_workout_sessions(con)
-            write_import_run(
+            with sqlite3.connect(source_db) as source_con:
+                health_record_rows["weight_records"] = import_health_record_values(
+                    source_con,
+                    con,
+                    "weight_record_table",
+                    "weight",
+                    lambda value: float(value) / 1000,
+                    "health_connect_weight_records",
+                    "weight_kg",
+                )
+                health_record_rows["body_fat_records"] = import_health_record_values(
+                    source_con,
+                    con,
+                    "body_fat_record_table",
+                    "percentage",
+                    float,
+                    "health_connect_body_fat_records",
+                    "body_fat_percent",
+                )
+                health_record_rows["basal_metabolic_rate_records"] = import_health_record_values(
+                    source_con,
+                    con,
+                    "basal_metabolic_rate_record_table",
+                    "basal_metabolic_rate",
+                    watt_to_kcal_per_day,
+                    "health_connect_basal_metabolic_rate_records",
+                    "basal_metabolic_rate_kcal",
+                )
+            warning_messages = [item["message"] for item in warnings if item.get("severity") == "warning" and item.get("message")]
+            import_run_id = write_import_run(
                 con,
                 source="health_connect",
                 status="success" if rows or sessions else "partial",
                 started_at=started_at,
                 source_path=source_db,
-                source_modified_at_value=path_modified_at(source_db),
-                data_start_date=min(dates) if dates else None,
-                data_end_date=max(dates) if dates else None,
+                source_modified_at_value=source_modified,
+                data_start_date=data_start,
+                data_end_date=data_end,
                 rows_read=len(rows) + len(sessions),
-                rows_written=len(rows) + len(sessions),
+                rows_written=len(rows) + len(sessions) + sum(health_record_rows.values()),
                 details={
                     "daily_rows": len(rows),
                     "workout_sessions": len(sessions),
+                    **health_record_rows,
                     "duplicate_workout_sessions_removed": duplicate_sessions_removed,
                     "app_source_column": app_source_column,
+                    "warnings": warning_messages,
+                    "health_connect_diagnostics": diagnostics,
                     "history_mode": "upsert_only_no_delete",
                 },
             )
+            write_import_diagnostics(con, import_run_id, diagnostics)
             con.commit()
     except Exception as exc:
         with connect_dashboard_db() as con:
@@ -1030,6 +1361,9 @@ def main():
         print(f"workout_sessions Duplikate bereinigt: {duplicate_sessions_removed}")
     print("body_metrics aus Health Connect ergänzt/aktualisiert.")
     print_source_status(rows)
+    for warning in warnings:
+        if warning.get("message"):
+            print(warning["message"])
 
 
 if __name__ == "__main__":

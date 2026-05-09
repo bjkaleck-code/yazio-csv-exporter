@@ -172,6 +172,61 @@ def fetch_body_composition(con):
     ).fetchall()
 
 
+def fetch_health_connect_weight_records(con):
+    if not table_exists(con, "health_connect_weight_records"):
+        return []
+    return con.execute(
+        """
+        SELECT date, measured_at, source_modified_at, weight_kg, app_name, package_name
+        FROM health_connect_weight_records
+        ORDER BY date, measured_at
+        """
+    ).fetchall()
+
+
+def fetch_health_connect_body_fat_records(con):
+    if not table_exists(con, "health_connect_body_fat_records"):
+        return []
+    return con.execute(
+        """
+        SELECT date, measured_at, source_modified_at, body_fat_percent, app_name, package_name
+        FROM health_connect_body_fat_records
+        ORDER BY date, measured_at
+        """
+    ).fetchall()
+
+
+def fetch_health_connect_bmr_records(con):
+    if not table_exists(con, "health_connect_basal_metabolic_rate_records"):
+        return []
+    return con.execute(
+        """
+        SELECT date, measured_at, source_modified_at, basal_metabolic_rate_kcal, app_name, package_name
+        FROM health_connect_basal_metabolic_rate_records
+        ORDER BY date, measured_at
+        """
+    ).fetchall()
+
+
+def fetch_import_diagnostics(con):
+    if not table_exists(con, "import_diagnostics"):
+        return []
+    return con.execute(
+        """
+        SELECT source, diagnostic_type, record_type, app_info_id, app_name,
+               package_name, table_name, min_date, max_date, max_measured_at,
+               max_source_modified_at, row_count, severity, message, created_at
+        FROM import_diagnostics
+        WHERE import_run_id IN (
+            SELECT MAX(id)
+            FROM import_runs
+            GROUP BY source
+        )
+        ORDER BY source, diagnostic_type, record_type, app_name
+        """
+    ).fetchall()
+
+
 def latest_window(rows, days):
     return list(rows[-days:]) if rows else []
 
@@ -274,6 +329,49 @@ def select_latest_weight_candidate(candidates):
     )
 
 
+def collect_global_weight_candidates(body, health_weight_records, composition):
+    candidates = []
+
+    def add(value, source, date_value, measured_at, note=None):
+        weight = numeric_value(value)
+        if weight is None or weight < 40 or weight > 200:
+            return
+        candidates.append(
+            {
+                "date": date_value,
+                "value": round(weight, 2),
+                "weight_kg": round(weight, 2),
+                "source": source,
+                "measured_at": measured_at or (f"{date_value}T00:00:00" if date_value else None),
+                "selection_time_basis": "measured_at" if measured_at else "date_fallback",
+                "note": note,
+            }
+        )
+
+    for row in body:
+        add(row_value(row, "weight"), "body_metrics", row_value(row, "date"), None)
+    for row in health_weight_records:
+        source_name = row_value(row, "app_name") or "Health Connect"
+        source = "Fitdays" if str(source_name).lower() == "fitdays" else "health_connect"
+        add(row_value(row, "weight_kg"), source, row_value(row, "date"), row_value(row, "measured_at"), source_name)
+    for row in composition:
+        add(row_value(row, "weight_kg"), row_value(row, "source") or "seca", row_value(row, "date"), row_value(row, "measured_at"))
+
+    priority = {"seca": 3, "Fitdays": 2, "health_connect": 2, "body_metrics": 1}
+    return sorted(candidates, key=lambda item: (item.get("measured_at") or "", priority.get(item.get("source"), 0)))
+
+
+def selected_weight_reason(candidate, candidates):
+    if not candidate:
+        return "Kein plausibler realer Gewichtswert in seca, Health Connect/Fitdays oder body_metrics vorhanden."
+    same_time = [item for item in candidates if (item.get("measured_at") or "") == (candidate.get("measured_at") or "")]
+    if len(same_time) > 1:
+        return "Gewählt wurde der neueste reale Messzeitpunkt; bei identischem measured_at entschied die Quellen-Priorität."
+    if candidate.get("selection_time_basis") == "date_fallback":
+        return "Gewählt wurde der aktuellste verfügbare Wert; für diesen Kandidaten fehlte measured_at, daher wurde date als Fallback genutzt."
+    return "Gewählt wurde der aktuellste reale Messwert nach measured_at. Quellen-Priorität wurde nur bei Gleichstand genutzt."
+
+
 def consolidate_composition_by_day(rows):
     best_by_date = {}
     for row in rows:
@@ -350,6 +448,31 @@ def serialize_import_runs(rows):
             "error_message": row["error_message"],
         }
     return result
+
+
+def serialize_rows(rows):
+    return [dict(row) for row in rows]
+
+
+def serialize_import_diagnostics(rows):
+    return serialize_rows(rows)
+
+
+def source_freshness_summary(import_runs, diagnostics):
+    rows = serialize_import_diagnostics(diagnostics)
+    warnings = [row for row in rows if row.get("severity") == "warning" or row.get("message")]
+    by_record_type = {}
+    for row in rows:
+        if row.get("diagnostic_type") != "record_type_status" or row.get("source") != "health_connect":
+            continue
+        by_record_type[row.get("record_type")] = row
+    return {
+        "health_connect": {
+            "import": serialize_import_runs(import_runs).get("health_connect"),
+            "record_types": by_record_type,
+            "warnings": warnings,
+        }
+    }
 
 
 def serialize_workouts(rows):
@@ -530,6 +653,56 @@ def build_nutrition_analysis(nutrition, meal_summary, nutrition_entries, current
     }
 
 
+def build_nutrition_recommendation(nutrition_analysis, series_data):
+    days = nutrition_analysis.get("days", [])
+    quality = nutrition_analysis.get("data_quality", {})
+    macro = nutrition_analysis.get("macro_averages", {})
+    recent_dates = {item.get("date") for item in days}
+    recent_series = [row for row in series_data if row.get("date") in recent_dates]
+    workout_days = sum(1 for row in recent_series if (row.get("workout_count") or 0) > 0 or row.get("training"))
+    weight_values = [row.get("weight") for row in recent_series if isinstance(row.get("weight"), (int, float))]
+    weight_change = round(weight_values[-1] - weight_values[0], 2) if len(weight_values) >= 2 else None
+
+    hints = []
+    basis = []
+    daily_days = quality.get("daily_nutrition_days", 0)
+    if daily_days < 3:
+        hints.append("Die Datenlage ist dünn; zuerst mehrere vollständige Ernährungstage erfassen, bevor harte Schlüsse gezogen werden.")
+    if macro.get("avg_energy_goal_7d") is not None:
+        basis.append("Yazio-Zielwerte wurden verwendet.")
+        delta = macro.get("avg_delta_vs_goal_7d")
+        if isinstance(delta, (int, float)):
+            if delta > 150:
+                hints.append("Die letzten Tage lagen im Schnitt über dem Yazio-Kalorienziel; portionsnahe Kalorienquellen prüfen.")
+            elif delta < -300:
+                hints.append("Die letzten Tage lagen deutlich unter dem Yazio-Kalorienziel; an Trainingstagen auf ausreichend geplante Mahlzeiten achten.")
+            else:
+                hints.append("Die Kalorien lagen nahe am Yazio-Ziel; die aktuelle Struktur wirkt anhand der vorhandenen Daten konsistent.")
+    else:
+        hints.append("Es gibt keine belastbaren Yazio-Zielwerte; daher nur qualitative Hinweise statt Zielvorgaben.")
+    if macro.get("avg_protein_7d") is not None:
+        hints.append(f"Protein lag im Schnitt bei {macro['avg_protein_7d']} g/Tag; Verteilung über die Mahlzeiten anhand der Yazio-Einträge prüfen.")
+    if macro.get("avg_fat_7d") is not None and macro.get("avg_carbs_7d") is not None:
+        hints.append(f"Fett und Kohlenhydrate lagen im Schnitt bei {macro['avg_fat_7d']} g bzw. {macro['avg_carbs_7d']} g pro Tag.")
+    if workout_days:
+        hints.append(f"In der Auswertung liegen {workout_days} Trainingstage; Abweichungen an diesen Tagen getrennt betrachten.")
+    if weight_change is not None:
+        basis.append(f"Gewichtsentwicklung im Zeitraum: {weight_change:+.2f} kg.")
+    else:
+        basis.append("Für eine Gewichtsentwicklung sind zu wenige Gewichtswerte im Zeitraum vorhanden.")
+
+    return {
+        "title": "Ernährungs-Empfehlung auf Basis der letzten Tage",
+        "period_days": nutrition_analysis.get("period_days", 7),
+        "period_start": nutrition_analysis.get("start"),
+        "period_end": nutrition_analysis.get("end"),
+        "summary": f"Auswertung aus {daily_days} Ernährungstagen, {workout_days} Trainingstagen und {len(weight_values)} Gewichtswerten.",
+        "basis": basis,
+        "hints": hints[:5],
+        "medical_note": "Keine medizinische Aussage; rein regelbasierte Auswertung vorhandener lokaler Daten.",
+    }
+
+
 def build_series(dates, nutrition, body, health, composition):
     nutrition_by_date = rows_by_date(nutrition)
     body_by_date = rows_by_date(body)
@@ -618,7 +791,11 @@ def main():
         meal_summary = fetch_optional_rows(con, "meal_summary")
         nutrition_entries = fetch_optional_rows(con, "nutrition_entries")
         import_runs = fetch_import_runs(con)
+        import_diagnostics = fetch_import_diagnostics(con)
         workouts = fetch_workout_sessions(con)
+        health_weight_records = fetch_health_connect_weight_records(con)
+        health_body_fat_records = fetch_health_connect_body_fat_records(con)
+        health_bmr_records = fetch_health_connect_bmr_records(con)
 
     all_dates = sorted(
         {row["date"] for row in nutrition}
@@ -636,6 +813,8 @@ def main():
                 "total_kcal_note": "Health Connect total_kcal may be incomplete",
             },
             "source_status": serialize_import_runs(import_runs),
+            "source_freshness": source_freshness_summary(import_runs, import_diagnostics),
+            "import_diagnostics": serialize_import_diagnostics(import_diagnostics),
             "workouts": serialize_workouts(workouts),
             "body_composition": serialize_composition(composition),
             "series": [],
@@ -645,7 +824,9 @@ def main():
         return
 
     series_data = build_series(all_dates, nutrition, body, health, composition)
-    current_weight = latest_non_null(series_data, "weight")
+    weight_candidates = collect_global_weight_candidates(body, health_weight_records, composition)
+    selected_weight = weight_candidates[-1] if weight_candidates else None
+    current_weight = selected_weight["value"] if selected_weight else latest_non_null(series_data, "weight")
     start_weight = first_non_null(series_data, "weight")
     weight_change = (
         round(current_weight - start_weight, 2)
@@ -678,6 +859,7 @@ def main():
     coffee_oat_milk_ml_7 = sum_values([row["coffee_oat_milk_ml"] for row in latest_body_7]) or 0
     oat_milk_calories_7 = round(coffee_oat_milk_ml_7 * OAT_MILK_KCAL_PER_100_ML / 100, 2)
     nutrition_analysis = build_nutrition_analysis(nutrition, meal_summary, nutrition_entries, current_weight)
+    nutrition_recommendation = build_nutrition_recommendation(nutrition_analysis, series_data)
 
     metrics = {
         "status": "ok",
@@ -708,8 +890,10 @@ def main():
             "current": current_weight,
             "change": weight_change,
             "avg_7_days": avg([row["weight"] for row in latest_series_7]),
-            "current_source": latest_non_null(series_data, "weight_source"),
-            "current_measured_at": latest_non_null(series_data, "weight_measured_at"),
+            "current_source": selected_weight.get("source") if selected_weight else latest_non_null(series_data, "weight_source"),
+            "current_measured_at": selected_weight.get("measured_at") if selected_weight else latest_non_null(series_data, "weight_measured_at"),
+            "selected_weight_reason": selected_weight_reason(selected_weight, weight_candidates),
+            "candidates_latest": list(reversed(weight_candidates[-12:])),
             "start_source": first_non_null(series_data, "weight_source"),
             "start_measured_at": first_non_null(series_data, "weight_measured_at"),
         },
@@ -735,9 +919,24 @@ def main():
             "total_kcal_note": "Health Connect total_kcal may be incomplete",
         },
         "source_status": serialize_import_runs(import_runs),
+        "source_freshness": source_freshness_summary(import_runs, import_diagnostics),
+        "import_diagnostics": serialize_import_diagnostics(import_diagnostics),
         "workouts": serialize_workouts(workouts),
         "body_composition": serialize_composition(composition),
         "nutrition_analysis": nutrition_analysis,
+        "nutrition_recommendation": nutrition_recommendation,
+        "source_data": {
+            "weight_candidates": list(reversed(weight_candidates)),
+            "health_daily": serialize_rows(health),
+            "health_connect_weight_records": serialize_rows(health_weight_records),
+            "health_connect_body_fat_records": serialize_rows(health_body_fat_records),
+            "health_connect_basal_metabolic_rate_records": serialize_rows(health_bmr_records),
+            "workout_sessions": serialize_workouts(workouts),
+            "daily_nutrition": serialize_rows(nutrition),
+            "seca_measurements": serialize_rows(composition),
+            "import_runs": list(serialize_import_runs(import_runs).values()),
+            "import_diagnostics": serialize_import_diagnostics(import_diagnostics),
+        },
         "series": series_data,
     }
 
